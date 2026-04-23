@@ -16,7 +16,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[
-        logging.FileHandler("entrenamiento_mito.log", mode='w') # 'w' para que se sobrescriba cada vez que empiezas
+        logging.FileHandler("entrenamiento.log", mode='w') # 'w' para que se sobrescriba cada vez que empiezas
     ]
 )
 logger = logging.getLogger(__name__)

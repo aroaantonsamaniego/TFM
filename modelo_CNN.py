@@ -24,20 +24,20 @@ class MitochondriaContextCNN(nn.Module): #definimos la red como un modelo entren
         
         self.conv1 = nn.Conv2d(num_channels, 16, kernel_size=3, padding=1) #las 2 primeras entradas define el numero de capas de entrada y salida
         self.conv2 = nn.Conv2d(16, 32, kernel_size=3, padding=1) #el tamaño del kernel es el tamaño del filtro, en este caso 3x3 pixeles
-        self.conv3 = nn.Conv2d(32, 64, kernel_size=3, padding=1) #el padding=1 introduce un borde de 0 alrededor para visulizar toda la info
-        self.conv4 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
+        #self.conv3 = nn.Conv2d(32, 64, kernel_size=3, padding=1) #el padding=1 introduce un borde de 0 alrededor para visulizar toda la info
+        #self.conv4 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
         
         self.bn1 = nn.BatchNorm2d(16) #normaliza para evitar valores extremos
         self.bn2 = nn.BatchNorm2d(32)
-        self.bn3 = nn.BatchNorm2d(64)
-        self.bn4 = nn.BatchNorm2d(128)
+        #self.bn3 = nn.BatchNorm2d(64)
+        #self.bn4 = nn.BatchNorm2d(128)
         
         self.pool = nn.MaxPool2d(2, 2) #reduce a la mitad el tamanyo de un canal
         self.dropout = nn.Dropout(0.25) #'apaga' aleatoriamente el 25% de los datos para evitar overfitting
         
         # Global Average Pooling + Clasificador final
         self.global_avg_pool = nn.AdaptiveAvgPool2d((1, 1)) #hace la media de un canal para obtener un unico valor
-        self.fc = nn.Linear(128, num_classes) #hace la operacion matematica que me devuelve un vector con 2 valores
+        self.fc = nn.Linear(32, num_classes) #hace la operacion matematica que me devuelve un vector con 2 valores
         # que indican la probabilidad de pertenecer a cada categoria: borde, no borde
         
     def forward(self, x): 
@@ -58,11 +58,11 @@ class MitochondriaContextCNN(nn.Module): #definimos la red como un modelo entren
         # Bloque 1
         x = self.pool(F.relu(self.bn1(self.conv1(x)))) 
         # Bloque 2
-        x = self.pool(F.relu(self.bn2(self.conv2(x))))
+        #x = self.pool(F.relu(self.bn2(self.conv2(x))))
         # Bloque 3
-        x = self.pool(F.relu(self.bn3(self.conv3(x))))
+        #x = self.pool(F.relu(self.bn3(self.conv3(x))))
         # Bloque 4
-        x = F.relu(self.bn4(self.conv4(x)))
+        x = F.relu(self.bn2(self.conv2(x)))
         x = self.dropout(x) #para reducir overfitting, solo se utiliza en el training
         
         # Global Average Pooling
