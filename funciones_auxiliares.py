@@ -38,15 +38,16 @@ def load_tif_image(tif_path):
     return normalize(canal_rojo), normalize(canal_verde)
 
 
-CLASS_MAP = {'interior': 0, 'borde': 1, 'exterior': 2}
+CLASS_MAP = {'interior': 0, 'exterior': 0, 'borde': 1}  # binario: 0=No borde, 1=Borde
 
 def load_labels_csv(csv_path):
     '''
     Carga el CSV con coordenadas de particulas. Soporta dos formatos:
     - Entrenamiento (3 columnas):
         x,y,clase
-        340,120,interior
-        150,200,borde
+        340,120,interior   ← se convierte a 0 (No borde)
+        150,200,borde      ← se convierte a 1 (Borde)
+        220,310,exterior   ← se convierte a 0 (No borde)
 
     - Clasificacion (2 columnas, sin etiquetas):
         x,y
@@ -173,5 +174,5 @@ def build_dataset_from_csv(tif_path, csv_path, patch_size=64):
 
     patches = np.stack(patches, axis=0)  # (N, 2, H, W)
     print(f"Dataset construido: {len(labels)} partículas | "
-          f"Distribución: {dict(zip(['interior','borde','exterior'], np.bincount(np.array(labels), minlength=3)))}")
+          f"Distribución: {dict(zip(['no borde','borde'], np.bincount(np.array(labels), minlength=2)))}")
     return ParticleDataset(patches, labels)

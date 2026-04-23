@@ -11,14 +11,14 @@ import torch.nn.functional as F #Para utilizar ReLU
 
 class MitochondriaContextCNN(nn.Module): #definimos la red como un modelo entrenable de PyTorch con nn.Module
     
-    def __init__(self, num_channels=2, num_classes=3):
+    def __init__(self, num_channels=2, num_classes=2):
         '''
         Define la arquitectura de la red: 4 bloques convolucionales con 
         normalizacion de batch y un clasificador basado en Global Average Pooling.
         
         Args:
             num_channels (int): Numero de mapas de entrada (en principio 2: estaticas y elipticas)
-            num_classes (int): Numero de categorias de salida (Interior, Borde, Exterior).
+            num_classes (int): Numero de categorias de salida (Borde, No borde).
         '''
         super().__init__() 
         
@@ -37,8 +37,8 @@ class MitochondriaContextCNN(nn.Module): #definimos la red como un modelo entren
         
         # Global Average Pooling + Clasificador final
         self.global_avg_pool = nn.AdaptiveAvgPool2d((1, 1)) #hace la media de un canal para obtener un unico valor
-        self.fc = nn.Linear(128, num_classes) #hace la operacion matematica que me devuelve un vector con 3 valores
-        # que indican la probabilidad de pertenecer a cada categoria: borde, exterior, interior
+        self.fc = nn.Linear(128, num_classes) #hace la operacion matematica que me devuelve un vector con 2 valores
+        # que indican la probabilidad de pertenecer a cada categoria: borde, no borde
         
     def forward(self, x): 
         '''

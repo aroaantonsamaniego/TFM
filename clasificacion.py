@@ -5,7 +5,7 @@ import numpy as np
 from funciones_auxiliares import load_tif_image, load_labels_csv, extract_patch_around_particle
 from modelo_CNN import MitochondriaContextCNN
 
-CLASS_NAMES = ['Interior', 'Borde', 'Exterior']
+CLASS_NAMES = ['No borde', 'Borde'] #se cambia a clasificacion final binaria
 
 
 def classify_single_particle(model, canal_rojo, canal_verde, particle_center,
@@ -60,7 +60,7 @@ def classify_from_tif(model_path, tif_path, positions, patch_size=64):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # Cargar modelo
-    model = MitochondriaContextCNN(num_channels=2, num_classes=3)
+    model = MitochondriaContextCNN(num_channels=2, num_classes=2) #nuevo numero de clases de salida
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.to(device)
     model.eval()
@@ -86,49 +86,34 @@ def classify_from_tif(model_path, tif_path, positions, patch_size=64):
 def classify_from_csv(model_path, tif_path, csv_path, patch_size=64):
     """
     Versión de classify_from_tif que lee las posiciones directamente de un CSV.
-
-    Soporta dos modos automáticamente según el contenido del CSV:
-    - Con etiquetas (x, y, clase): calcula y muestra el accuracy.
-    - Sin etiquetas (x, y):        solo clasifica y devuelve resultados.
+    Modo puramente de inferencia: clasifica las partículas y devuelve resultados.
+    No realiza ninguna evaluación (para eso está entrenamiento.py).
 
     Args:
         model_path (str): Ruta al archivo .pth.
         tif_path   (str): Ruta al archivo .tif de 2 canales.
-        csv_path   (str): Ruta al CSV con columnas x, y [, clase].
+        csv_path   (str): Ruta al CSV con columnas x, y (sin etiquetas).
         patch_size (int): Tamaño del recorte (por defecto 64).
 
     Returns:
         list of dict: Una entrada por partícula con claves:
-                      'position', 'prediction', 'probabilities', 'class_name'
-                      y 'true_label' solo si el CSV tenía etiquetas.
+                      'position', 'prediction', 'probabilities', 'class_name'.
     """
-    positions, labels = load_labels_csv(csv_path)
-    results = classify_from_tif(model_path, tif_path, positions, patch_size)
-
-    if labels is not None:
-        # Modo evaluación: añadir etiqueta real y calcular accuracy
-        label_names = ['Interior', 'Borde', 'Exterior']
-        for res, true_label in zip(results, labels):
-            res['true_label'] = label_names[true_label]
-        correct = sum(r['prediction'] == l for r, l in zip(results, labels))
-        print(f"Accuracy sobre {len(labels)} partículas: {100*correct/len(labels):.1f}%")
-    else:
-        # Modo inferencia: no hay etiquetas, solo clasificar
-        print(f"Clasificadas {len(results)} partículas (CSV sin etiquetas).")
-
+    positions, _ = load_labels_csv(csv_path)
+    results      = classify_from_tif(model_path, tif_path, positions, patch_size)
+    print(f"Clasificadas {len(results)} partículas.")
     return results
 
 
 if __name__ == "__main__":
-    MODEL_PATH = "best_mito_classifier.pth"
-    TIF_PATH   = "imagen.tif"   # Cambiar por nombre imagen
-    CSV_PATH   = "etiquetas.csv"   #Cambiar por nombre archivo de datos
+    MODEL_PATH = "best_mito_classifier.pth" #cambiar por archivo del modelo
+    TIF_PATH   = "imagen.tif"      # Cambiar por nombre imagen
+    CSV_PATH   = "etiquetas.csv"   # Cambiar por nombre archivo de datos
 
     results = classify_from_csv(MODEL_PATH, TIF_PATH, CSV_PATH)
 
     for r in results:
         print(f"  ({r['position'][0]:4d}, {r['position'][1]:4d}) → "
               f"{r['class_name']:8s}  "
-              f"[Int={r['probabilities'][0]:.2f} "
-              f"Bor={r['probabilities'][1]:.2f} "
-              f"Ext={r['probabilities'][2]:.2f}]")
+              f"[NoBorde={r['probabilities'][0]:.2f} "
+              f"Borde={r['probabilities'][1]:.2f}]")
