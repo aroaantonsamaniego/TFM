@@ -9,6 +9,18 @@ from sklearn.metrics import roc_curve, auc
 from modelo_CNN import MitochondriaContextCNN
 from funciones_auxiliares import build_dataset_from_csv
 
+import logging
+
+# Configuración del logger
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler("entrenamiento_mito.log", mode='w') # 'w' para que se sobrescriba cada vez que empiezas
+    ]
+)
+logger = logging.getLogger(__name__)
+
 
 def prepare_loaders(tif_path, csv_path, patch_size=64, batch_size=32, val_split=0.2):
     '''
@@ -33,7 +45,7 @@ def prepare_loaders(tif_path, csv_path, patch_size=64, batch_size=32, val_split=
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)  #utilizamos dataloader para enviarle a la red los datos de 32 en 32
     val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False) #en entrenamiento shuffle true para que se cojan cada vez en un orden
 
-    print(f"Train: {trn_size} muestras | Val: {val_size} muestras")
+    logger.info(f"Train: {trn_size} muestras | Val: {val_size} muestras")
     return train_loader, val_loader
 
 
@@ -61,7 +73,7 @@ def plot_roc_curve(val_scores, val_labels, save_path=None):
     fpr, tpr, _ = roc_curve(val_labels, val_scores)
     roc_auc     = auc(fpr, tpr)
 
-    print(f"AUC-ROC (validacion): {roc_auc:.4f}")
+    logger.info(f"AUC-ROC (validacion): {roc_auc:.4f}")
 
     fig, ax = plt.subplots(figsize=(7, 6))
 
@@ -119,6 +131,8 @@ def train_model(model, train_loader, val_loader, num_epochs=50, lr=0.001, roc_sa
     best_val_scores = None
     best_val_labels = None
 
+    logger.info(f"Iniciando entrenamiento: {num_epochs} epochs, LR: {lr}")
+
     for epoch in range(num_epochs):
         model.train() #comando interno de pytorch que pone la red en modo entrenamiento (hay dropout)
         train_loss = 0
@@ -162,8 +176,9 @@ def train_model(model, train_loader, val_loader, num_epochs=50, lr=0.001, roc_sa
         fpr, tpr, _ = roc_curve(val_labels_ep, val_scores_ep)
         val_auc      = auc(fpr, tpr)
 
-        print(f'Epoch {epoch+1:2d}: Val AUC {val_auc:.4f} | '
+        logger.info(f'Epoch {epoch+1:2d}: Val AUC {val_auc:.4f} | '
               f'Train Loss {train_losses[-1]:.3f} | Val Loss {val_losses[-1]:.3f}')
+    
 
         # Guardar el modelo cuando mejora el AUC de validacion
         if val_auc > best_val_auc:
