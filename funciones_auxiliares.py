@@ -38,7 +38,7 @@ def load_tif_image(tif_path):
     return normalize(canal_rojo), normalize(canal_verde)
 
 
-CLASS_MAP = {'interior': 0, 'exterior': 0, 'borde': 1}  # binario: 0=No borde, 1=Borde
+CLASS_MAP = {'interior': 0, 'exterior': 0,'aislada':0, 'borde': 1}  # binario: 0=No borde, 1=Borde
 
 def load_labels_csv(csv_path):
     '''
@@ -48,6 +48,7 @@ def load_labels_csv(csv_path):
         340,120,interior   ← se convierte a 0 (No borde)
         150,200,borde      ← se convierte a 1 (Borde)
         220,310,exterior   ← se convierte a 0 (No borde)
+        220,310,aislada   ← se convierte a 0 (No borde)
 
     - Clasificacion (2 columnas, sin etiquetas):
         x,y
@@ -62,6 +63,7 @@ def load_labels_csv(csv_path):
                - positions: lista de tuplas [(y1, x1), (y2, x2), ...]  ← orden interno siempre (y, x)
                - labels: lista de enteros [0, 1, 2, ...] o None si el CSV no tiene etiquetas.
     '''
+    print(f"--- Procesando archivo: {csv_path} ---") # ver que archivo esta leyendo para detectar fallos
     df = pd.read_csv(csv_path)
 
     # Aceptar cabeceras en mayusculas o minusculas
@@ -71,7 +73,8 @@ def load_labels_csv(csv_path):
         raise ValueError("El CSV debe tener al menos las columnas: x, y")
 
     # CSV viene como x,y pero internamente siempre usamos (y, x)
-    positions = list(zip(df['y'].astype(int), df['x'].astype(int)))
+    #positions = list(zip(df['y'].astype(int), df['x'].astype(int)))
+    positions = list(zip(df['y'].astype(float).astype(int), df['x'].astype(float).astype(int)))
 
     # Etiquetas: solo si la columna 'clase' existe (modo entrenamiento/evaluacion)
     if 'clase' in df.columns:
@@ -131,7 +134,7 @@ class ParticleDataset(Dataset):
 
     Args:
         patches (np.ndarray): Array (N, 2, H, W) con los recortes.
-        labels  (list/array): Etiquetas enteras (0=interior, 1=borde, 2=exterior).
+        labels  (list/array): Etiquetas enteras (0=no borde, 1=borde).
     '''
     def __init__(self, patches, labels):
         self.patches = patches
@@ -146,33 +149,62 @@ class ParticleDataset(Dataset):
         return patch, label
 
 
-
 def build_dataset_from_csv(tif_path, csv_path, patch_size=64):
     '''
     Carga el TIFF y el CSV, extrae los recortes de 2 canales para cada
     partícula y devuelve un ParticleDataset listo para el DataLoader.
 
+    Acepta tanto rutas individuales (str) como listas de rutas (list).
+    Si se pasan listas, deben tener la misma longitud y se emparejan por índice:
+        tif_path[0] <-> csv_path[0]
+        tif_path[1] <-> csv_path[1]
+        ...
+
     Args:
-        tif_path   (str): Ruta al archivo .tif de 2 canales.
-        csv_path   (str): Ruta al CSV con columnas y, x, clase.
-        patch_size (int): Tamaño del recorte (por defecto 64).
+        tif_path   (str | list[str]): Ruta/s al archivo .tif de 2 canales.
+        csv_path   (str | list[str]): Ruta/s al CSV con columnas y, x, clase.
+        patch_size (int):             Tamaño del recorte (por defecto 64).
 
     Returns:
         ParticleDataset
     '''
-    canal_rojo, canal_verde = load_tif_image(tif_path)
-    positions, labels       = load_labels_csv(csv_path)
+    # Normalizar a listas para un procesamiento uniforme
+    if isinstance(tif_path, str):
+        tif_path = [tif_path]
+    if isinstance(csv_path, str):
+        csv_path = [csv_path]
 
-    if labels is None:
-        raise ValueError("El CSV de entrenamiento debe incluir la columna 'clase'. "
-                         "Formato esperado: x, y, clase")
+    if len(tif_path) != len(csv_path):
+        raise ValueError(
+            f"El número de TIFFs ({len(tif_path)}) y CSVs ({len(csv_path)}) debe coincidir. "
+            "Cada TIFF debe tener su CSV de etiquetas correspondiente."
+        )
 
-    patches = []
-    for pos in positions:
-        patch = extract_patch_around_particle(canal_rojo, canal_verde, pos, patch_size)
-        patches.append(patch)
+    all_patches = []
+    all_labels  = []
 
-    patches = np.stack(patches, axis=0)  # (N, 2, H, W)
-    print(f"Dataset construido: {len(labels)} partículas | "
-          f"Distribución: {dict(zip(['no borde','borde'], np.bincount(np.array(labels), minlength=2)))}")
-    return ParticleDataset(patches, labels)
+    for i, (tif, csv) in enumerate(zip(tif_path, csv_path)):
+        print(f"  Cargando par {i+1}/{len(tif_path)}: {tif} + {csv}")
+        canal_rojo, canal_verde = load_tif_image(tif)
+        positions, labels       = load_labels_csv(csv)
+
+        if labels is None:
+            raise ValueError(
+                f"El CSV '{csv}' no contiene la columna 'clase'. "
+                "El CSV de entrenamiento debe incluir: x, y, clase"
+            )
+
+        for pos in positions:
+            patch = extract_patch_around_particle(canal_rojo, canal_verde, pos, patch_size)
+            all_patches.append(patch)
+
+        all_labels.extend(labels)
+
+    all_patches = np.stack(all_patches, axis=0)  # (N_total, 2, H, W)
+    counts      = np.bincount(np.array(all_labels), minlength=2)
+
+    print(f"Dataset construido: {len(all_labels)} partículas en total "
+          f"({len(tif_path)} imagen/es) | "
+          f"Distribución: no_borde={counts[0]}, borde={counts[1]}")
+
+    return ParticleDataset(all_patches, all_labels)

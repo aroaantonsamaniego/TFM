@@ -24,26 +24,38 @@ logger = logging.getLogger(__name__)
 
 def prepare_loaders(tif_path, csv_path, patch_size=64, batch_size=32, val_split=0.2):
     '''
-    Construye los DataLoaders (paquetes de datos) de entrenamiento y validacion directamente
-    desde el TIFF y el CSV de etiquetas.
+    Construye los DataLoaders de entrenamiento y validacion a partir de uno o
+    varios pares TIFF + CSV de etiquetas.
+
+    Acepta tanto rutas individuales (str) como listas de rutas (list).
+    Si se pasan listas, deben tener la misma longitud y se emparejan por índice:
+        tif_path[0] <-> csv_path[0]
+        tif_path[1] <-> csv_path[1]
+        ...
+    Todos los datos se combinan en un único dataset antes de dividirlos en
+    entrenamiento y validación, de modo que el reparto es global y aleatorio.
 
     Args:
-        tif_path   (str):   Ruta al archivo .tif de 2 canales.
-        csv_path   (str):   Ruta al CSV con columnas y, x, clase.
-        patch_size (int):   Tamanyo del recorte (por defecto 64).
-        batch_size (int):   Tamanyo del batch (por defecto 32).
-        val_split  (float): Fraccion del dataset para validacion (por defecto 0.2).
+        tif_path   (str | list[str]): Ruta/s al archivo .tif de 2 canales.
+        csv_path   (str | list[str]): Ruta/s al CSV con columnas y, x, clase.
+        patch_size (int):             Tamaño del recorte (por defecto 64).
+        batch_size (int):             Tamaño del batch (por defecto 32).
+        val_split  (float):           Fracción del dataset para validación (por defecto 0.2).
 
     Returns:
         tuple: (train_loader, val_loader)
     '''
-    dataset  = build_dataset_from_csv(tif_path, csv_path, patch_size) #cargamos datos
-    val_size = int(len(dataset) * val_split) #definimos que porcentaje de datos van para validacion
-    trn_size = len(dataset) - val_size
-    train_ds, val_ds = random_split(dataset, [trn_size, val_size]) #que los datos tomados para cada grupo sean aleatorios
+    # build_dataset_from_csv ya acepta listas, solo hay que pasarselas directamente
+    n_fuentes = len(tif_path) if isinstance(tif_path, list) else 1
+    logger.info(f"Cargando datos de {n_fuentes} fuente/s...")
 
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)  #utilizamos dataloader para enviarle a la red los datos de 32 en 32
-    val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False) #en entrenamiento shuffle true para que se cojan cada vez en un orden
+    dataset  = build_dataset_from_csv(tif_path, csv_path, patch_size)
+    val_size = int(len(dataset) * val_split)
+    trn_size = len(dataset) - val_size
+    train_ds, val_ds = random_split(dataset, [trn_size, val_size])
+
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+    val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False)
 
     logger.info(f"Train: {trn_size} muestras | Val: {val_size} muestras")
     return train_loader, val_loader
@@ -121,40 +133,39 @@ def train_model(model, train_loader, val_loader, num_epochs=50, lr=0.001, roc_sa
     model     = model.to(device)
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4) #se encarga de los pesos de la red
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5) #ajusta en caso de detectar aprendizaje lento
+    optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)
 
     best_val_auc = 0.0
     train_losses, val_losses = [], []
 
-    # Variables para guardar scores y etiquetas de validacion del mejor epoch
     best_val_scores = None
     best_val_labels = None
 
     logger.info(f"Iniciando entrenamiento: {num_epochs} epochs, LR: {lr}")
 
     for epoch in range(num_epochs):
-        model.train() #comando interno de pytorch que pone la red en modo entrenamiento (hay dropout)
+        model.train()
         train_loss = 0
 
         for patches, labels in train_loader:
             patches = patches.to(device)
-            labels  = labels.squeeze(1).to(device) #para convertir en lista plana (conflicto con la funcion criterio)
+            labels  = labels.squeeze(1).to(device)
 
-            optimizer.zero_grad()                #borrar memoria optimizador
-            outputs = model(patches)             #le pasamos datos a la red para que nos devuelva predicciones
-            loss    = criterion(outputs, labels) #comparamos salida red con la realidad
-            loss.backward()                      #recorre la red al reves para encontrar los fallos
-            optimizer.step()                     #se ajustan los pesos 'malos' detectados con backward
+            optimizer.zero_grad()
+            outputs = model(patches)
+            loss    = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
 
             train_loss += loss.item()
 
-        model.eval() #comando interno pytorch poner red modo validacion
+        model.eval()
         val_loss      = 0
-        val_scores_ep = []  #probabilidad de clase Borde para cada muestra de validacion
-        val_labels_ep = []  #etiqueta real de cada muestra de validacion
+        val_scores_ep = []
+        val_labels_ep = []
 
-        with torch.no_grad(): #para que no guarde el historial y sepa que no hay backward, solo comparamos
+        with torch.no_grad():
             for patches, labels in val_loader:
                 patches = patches.to(device)
                 labels  = labels.squeeze(1).to(device)
@@ -163,43 +174,47 @@ def train_model(model, train_loader, val_loader, num_epochs=50, lr=0.001, roc_sa
                 loss     = criterion(outputs, labels)
                 val_loss += loss.item()
 
-                # Probabilidad de la clase positiva (Borde, indice 1) via softmax
                 probs = torch.softmax(outputs, dim=1)[:, 1].cpu().numpy()
                 val_scores_ep.extend(probs)
                 val_labels_ep.extend(labels.cpu().numpy())
 
-        train_losses.append(train_loss / len(train_loader)) #error medio de la vuelta
+        train_losses.append(train_loss / len(train_loader))
         val_losses.append(val_loss     / len(val_loader))
-        scheduler.step(val_losses[-1]) #si el error medio no baja, reduce el learning rate
+        scheduler.step(val_losses[-1])
 
-        # Calcular AUC de validacion de esta epoch
         fpr, tpr, _ = roc_curve(val_labels_ep, val_scores_ep)
         val_auc      = auc(fpr, tpr)
 
         logger.info(f'Epoch {epoch+1:2d}: Val AUC {val_auc:.4f} | '
               f'Train Loss {train_losses[-1]:.3f} | Val Loss {val_losses[-1]:.3f}')
-    
 
-        # Guardar el modelo cuando mejora el AUC de validacion
         if val_auc > best_val_auc:
             best_val_auc    = val_auc
             best_val_scores = val_scores_ep
             best_val_labels = val_labels_ep
-            torch.save(model.state_dict(), 'best_mito_classifier.pth') #guarda todos los datos de la red actualizados
+            torch.save(model.state_dict(), 'best_mito_classifier.pth')
             print(f'  -> Modelo guardado (val_auc={val_auc:.4f})')
 
-    # Curva ROC final sobre los datos de validacion del mejor epoch
     print(f'\nEntrenamiento completado. Mejor AUC de validacion: {best_val_auc:.4f}')
     plot_roc_curve(best_val_scores, best_val_labels, save_path=roc_save_path)
 
     return model, train_losses, val_losses
 
 
-#Ejecucion del codigo
+# ──────────────────────────────────────────────────────────────────────────────
+# Ejecucion del codigo
+# ──────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    TIF_PATH      = "2_canales_red_std_green_rest.tif"      # <-- ruta a tu archivo TIFF
-    CSV_PATH      = "datos_particulas_training.csv"   # <-- ruta a tu CSV con columnas y, x, clase
-    ROC_SAVE_PATH = "roc_curve.png"   # <-- dejar None para no guardar en disco
+
+    # ── Opción A: una sola imagen ─────────────────────────────────────────────
+    # TIF_PATH = "2_canales_red_std_green_rest.tif"
+    # CSV_PATH = "datos_particulas_training.csv"
+
+    # ── Opción B: varias imágenes (listas del mismo tamaño, emparejadas) ──────
+    TIF_PATH = ["datos/SUb_01_2_merged.tif","datos/SUb_01_5_merged.tif","datos/SUb_01_8_merged.tif","datos/SUb_02_5_merged.tif","datos/SUb_02_8_merged.tif","datos/SUb_02_10_merged.tif","datos/SUb_03_3_merged.tif"]
+    CSV_PATH = ["datos/SUb_01_2_datos_training.csv","datos/SUb_01_5_datos_training.csv","datos/SUb_01_8_datos_training.csv","datos/SUb_02_5_datos_training.csv","datos/SUb_02_8_datos_training.csv","datos/SUb_02_10_datos_training.csv","datos/SUb_03_3_datos_training.csv"]
+
+    ROC_SAVE_PATH = "roc_curve.png"   # None para no guardar en disco
 
     train_loader, val_loader = prepare_loaders(TIF_PATH, CSV_PATH)
 
