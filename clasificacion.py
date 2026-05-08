@@ -1,6 +1,10 @@
 import torch
 import torch.nn.functional as F
 import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from pathlib import Path
+from sklearn.metrics import roc_curve, auc, confusion_matrix, classification_report
 
 from funciones_auxiliares import load_tif_image, load_labels_csv, extract_patch_around_particle
 from modelo_CNN import MitochondriaContextCNN
@@ -70,7 +74,7 @@ def classify_from_tif(model_path, tif_path, positions, patch_size=64):
     # Normalizar a listas para un procesamiento uniforme
     if isinstance(tif_path, str):
         tif_path  = [tif_path]
-        positions = [positions]   # lista de posiciones → lista de listas
+        positions = [positions]
 
     if len(tif_path) != len(positions):
         raise ValueError(
@@ -88,20 +92,141 @@ def classify_from_tif(model_path, tif_path, positions, patch_size=64):
                 model, canal_rojo, canal_verde, pos, patch_size, device
             )
             results.append({
-                'tif_path':    tif,
-                'position':    pos,
-                'prediction':  pred_idx,
+                'tif_path':      tif,
+                'position':      pos,
+                'prediction':    pred_idx,
                 'probabilities': probs,
-                'class_name':  class_name,
+                'class_name':    class_name,
             })
 
     return results
 
 
-def classify_from_csv(model_path, tif_path, csv_path, patch_size=64):
+def plot_roc_curve(scores, labels, save_path=None):
     """
-    Versión de classify_from_tif que lee las posiciones directamente de CSV/s.
-    Modo puramente de inferencia: clasifica las partículas y devuelve resultados.
+    Calcula y representa la curva ROC sobre los resultados de clasificación.
+
+    Args:
+        scores    (list of float): Probabilidades de clase Borde para cada muestra.
+        labels    (list of int):   Etiquetas reales (0=No borde, 1=Borde).
+        save_path (str | None):    Ruta opcional para guardar la figura en disco.
+
+    Returns:
+        float: Valor del AUC.
+    """
+    fpr, tpr, _ = roc_curve(labels, scores)
+    roc_auc     = auc(fpr, tpr)
+
+    fig, ax = plt.subplots(figsize=(7, 6))
+    ax.plot(fpr, tpr, color='steelblue', lw=2,
+            label=f'Curva ROC  (AUC = {roc_auc:.3f})')
+    ax.plot([0, 1], [0, 1], color='gray', lw=1.2,
+            linestyle='--', label='Clasificador aleatorio (AUC = 0.5)')
+    ax.set_xlim([0.0, 1.0])
+    ax.set_ylim([0.0, 1.05])
+    ax.set_xlabel('Tasa de Falsos Positivos (FPR)', fontsize=12)
+    ax.set_ylabel('Tasa de Verdaderos Positivos (TPR)', fontsize=12)
+    ax.set_title('Curva ROC - Evaluación del modelo\nClasificador Borde / No borde', fontsize=13)
+    ax.legend(loc='lower right', fontsize=11)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150)
+        print(f"Curva ROC guardada en: {save_path}")
+
+    plt.show()
+    return roc_auc
+
+
+def evaluate_results(results, true_labels, roc_save_path=None):
+    """
+    Compara las predicciones del modelo con las etiquetas reales y muestra
+    métricas de evaluación: accuracy, reporte por clase, matriz de confusión
+    y curva ROC.
+
+    Args:
+        results       (list of dict): Salida de classify_from_csv con etiquetas.
+                                      Cada dict debe tener 'prediction' y 'probabilities'.
+        true_labels   (list of int):  Etiquetas reales en el mismo orden que results.
+        roc_save_path (str | None):   Ruta opcional para guardar la curva ROC en disco.
+
+    Returns:
+        dict: Métricas calculadas con claves 'accuracy', 'auc', 'confusion_matrix'.
+    """
+    predictions = [r['prediction']        for r in results]
+    scores      = [r['probabilities'][1]  for r in results]  # prob. clase Borde
+
+    # Accuracy global
+    correct  = sum(p == t for p, t in zip(predictions, true_labels))
+    accuracy = correct / len(true_labels)
+
+    # Matriz de confusión y reporte por clase
+    cm     = confusion_matrix(true_labels, predictions)
+    report = classification_report(true_labels, predictions,
+                                   target_names=CLASS_NAMES, zero_division=0)
+
+    # Curva ROC y AUC
+    roc_auc = plot_roc_curve(scores, true_labels, save_path=roc_save_path)
+
+    # Imprimir resumen
+    print("\n" + "="*55)
+    print("          RESULTADOS DE EVALUACIÓN")
+    print("="*55)
+    print(f"  Total partículas evaluadas : {len(true_labels)}")
+    print(f"  Accuracy                   : {accuracy:.4f}  ({correct}/{len(true_labels)})")
+    print(f"  AUC-ROC                    : {roc_auc:.4f}")
+    print("-"*55)
+    print("  Matriz de confusión:")
+    print(f"               Pred NoBorde  Pred Borde")
+    print(f"  Real NoBorde   {cm[0,0]:>6d}        {cm[0,1]:>6d}")
+    print(f"  Real Borde     {cm[1,0]:>6d}        {cm[1,1]:>6d}")
+    print("-"*55)
+    print("  Reporte por clase:")
+    print(report)
+    print("="*55)
+
+    return {
+        'accuracy':         accuracy,
+        'auc':              roc_auc,
+        'confusion_matrix': cm,
+    }
+
+
+def save_results_to_csv(csv_path, results_per_csv):
+    """
+    Añade la columna 'clasificacion' al CSV original y lo guarda con el sufijo
+    '_clasificado' en el mismo directorio. Si el CSV ya tenía la columna
+    'clasificacion', la sobreescribe.
+
+    Args:
+        csv_path        (str):        Ruta al CSV original.
+        results_per_csv (list[dict]): Resultados de classify_from_tif correspondientes
+                                      a ese CSV, en el mismo orden que las filas del CSV.
+
+    Returns:
+        str: Ruta del archivo guardado.
+    """
+    df = pd.read_csv(csv_path)
+    df['clasificacion'] = [r['class_name'] for r in results_per_csv]
+
+    p        = Path(csv_path)
+    out_path = p.with_name(p.stem + '_clasificado' + p.suffix)
+    df.to_csv(out_path, index=False)
+    print(f"  Resultados guardados en: {out_path}")
+    return str(out_path)
+
+
+def classify_from_csv(model_path, tif_path, csv_path, patch_size=64, roc_save_path=None):
+    """
+    Clasifica partículas a partir de uno o varios pares TIFF + CSV y guarda
+    los resultados añadiendo la columna 'clasificacion' a cada CSV de entrada,
+    con el sufijo '_clasificado' en el nombre del archivo de salida.
+
+    Si los CSV contienen la columna 'clase', activa automáticamente el modo
+    evaluación: compara las predicciones con las etiquetas reales y muestra
+    accuracy, matriz de confusión y curva ROC.
+    Si los CSV no tienen 'clase', solo hace inferencia.
 
     Acepta tanto rutas individuales (str) como listas de rutas (list).
     Si se pasan listas, deben tener la misma longitud y se emparejan por índice:
@@ -110,14 +235,16 @@ def classify_from_csv(model_path, tif_path, csv_path, patch_size=64):
         ...
 
     Args:
-        model_path (str):             Ruta al archivo .pth.
-        tif_path   (str | list[str]): Ruta/s al archivo .tif de 2 canales.
-        csv_path   (str | list[str]): Ruta/s al CSV con columnas x, y (sin etiquetas necesarias).
-        patch_size (int):             Tamaño del recorte (por defecto 64).
+        model_path    (str):             Ruta al archivo .pth.
+        tif_path      (str | list[str]): Ruta/s al archivo .tif de 2 canales.
+        csv_path      (str | list[str]): Ruta/s al CSV con columnas x, y (y opcionalmente clase).
+        patch_size    (int):             Tamaño del recorte (por defecto 64).
+        roc_save_path (str | None):      Ruta para guardar la curva ROC (solo en modo evaluación).
 
     Returns:
         list of dict: Una entrada por partícula con claves:
                       'tif_path', 'position', 'prediction', 'probabilities', 'class_name'.
+                      En modo evaluación, cada dict incluye además 'true_label'.
     """
     # Normalizar a listas
     if isinstance(tif_path, str):
@@ -130,35 +257,63 @@ def classify_from_csv(model_path, tif_path, csv_path, patch_size=64):
             f"El número de TIFFs ({len(tif_path)}) y CSVs ({len(csv_path)}) debe coincidir."
         )
 
-    # Leer posiciones de cada CSV
-    all_positions = []
-    for csv in csv_path:
-        pos, _ = load_labels_csv(csv)
-        all_positions.append(pos)
+    # Leer posiciones y etiquetas de cada CSV
+    all_positions  = []
+    all_labels_raw = []
+    has_labels     = []
 
-    # classify_from_tif ya acepta listas
+    for csv in csv_path:
+        pos, labels = load_labels_csv(csv)
+        all_positions.append(pos)
+        all_labels_raw.append(labels)
+        has_labels.append(labels is not None)
+
+    # Modo evaluación solo si TODOS los CSVs tienen etiquetas
+    evaluation_mode = all(has_labels)
+
+    if any(has_labels) and not evaluation_mode:
+        print("AVISO: algunos CSVs tienen la columna 'clase' y otros no. "
+              "Se omiten las etiquetas y se hace solo inferencia.")
+
+    # Clasificación
     results = classify_from_tif(model_path, tif_path, all_positions, patch_size)
-    print(f"Clasificadas {len(results)} partículas en total ({len(tif_path)} imagen/es).")
+
+    # ── Guardar CSV clasificados ───────────────────────────────────────────────
+    # Repartir los resultados globales por CSV según cuántas partículas tiene cada uno
+    print()
+    idx = 0
+    for csv, pos_list in zip(csv_path, all_positions):
+        n                = len(pos_list)
+        results_for_csv  = results[idx: idx + n]
+        save_results_to_csv(csv, results_for_csv)
+        idx += n
+
+    # ── Modo evaluación ────────────────────────────────────────────────────────
+    if evaluation_mode:
+        true_labels = []
+        for labels in all_labels_raw:
+            true_labels.extend(labels)
+
+        for r, true_lbl in zip(results, true_labels):
+            r['true_label'] = true_lbl
+
+        print(f"\nModo evaluación activado: {len(results)} partículas clasificadas "
+              f"y comparadas con sus etiquetas reales.")
+        evaluate_results(results, true_labels, roc_save_path=roc_save_path)
+
+    else:
+        print(f"\nClasificadas {len(results)} partículas en total ({len(tif_path)} imagen/es).")
+
     return results
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    MODEL_PATH = "best_mito_classifier.pth"   # <-- ruta al modelo entrenado
+    MODEL_PATH = "best_mito_classifier.pth"   
 
-    # ── Opción A: una sola imagen ─────────────────────────────────────────────
-    # TIF_PATH = "imagen.tif"
-    # CSV_PATH = "etiquetas.csv"
+    TIF_PATH = ["datos/SUb_01_2_merged.tif"]
+    CSV_PATH = ["datos/SUb_01_2_datos_training.csv"]
 
-    # ── Opción B: varias imágenes (listas del mismo tamaño, emparejadas) ──────
-    TIF_PATH = ["imagen1.tif","imagen2.tif","imagen3.tif"]
-    CSV_PATH = ["etiquetas1.csv","etiquetas2.csv","etiquetas3.csv"]
+    ROC_SAVE_PATH = "roc_curve_eval.png"   # None para no guardar en disco
 
-    results = classify_from_csv(MODEL_PATH, TIF_PATH, CSV_PATH)
-
-    for r in results:
-        print(f"  {r['tif_path']} | "
-              f"({r['position'][0]:4d}, {r['position'][1]:4d}) → "
-              f"{r['class_name']:8s}  "
-              f"[NoBorde={r['probabilities'][0]:.2f} "
-              f"Borde={r['probabilities'][1]:.2f}]")
+    classify_from_csv(MODEL_PATH, TIF_PATH, CSV_PATH, roc_save_path=ROC_SAVE_PATH)
