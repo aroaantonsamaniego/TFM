@@ -45,7 +45,9 @@ def load_tif_image(tif_path):
 # Carga de CSV
 # ──────────────────────────────────────────────────────────────────────────────
 
-CLASS_MAP = {'interior': 0, 'exterior': 0, 'aislada': 0, 'borde': 1}
+#CLASS_MAP = {'interior': 0, 'exterior': 0, 'aislada': 0, 'borde': 1}
+#cambiamos mapeo para ver que ocurre ahora
+CLASS_MAP = {'interior': 1, 'exterior': 1, 'aislada': 1, 'borde': 0}
 
 def load_labels_csv(csv_path):
     '''
@@ -95,7 +97,7 @@ def filtrar_aisladas_etiquetadas(positions, labels, clases_raw):
 
     Args:
         positions  (list of (y,x)): Coordenadas de todas las partículas.
-        labels     (list of int):   Etiquetas numéricas (0=no borde, 1=borde).
+        labels     (list of int):   Etiquetas numéricas (0=borde, 1=interior).
         clases_raw (list of str):   Etiquetas de texto originales del CSV.
 
     Returns:
@@ -220,7 +222,7 @@ class ParticleDataset(Dataset):
 
     Args:
         patches (np.ndarray): Array (N, 2, H, W).
-        labels  (list/array): Etiquetas enteras (0=no borde, 1=borde).
+        labels  (list/array): Etiquetas enteras (0=borde, 1=interior).
     '''
     def __init__(self, patches, labels):
         self.patches = patches
@@ -314,7 +316,7 @@ def build_dataset_from_csv(tif_path, csv_path, patch_size=32):
 
     print(f"\nDataset construido: {len(all_labels)} partículas "
           f"({total_aisladas} aisladas eliminadas de {total_particulas} totales) | "
-          f"Distribución: no_borde={counts[0]}, borde={counts[1]}")
+          f"Distribución: borde={counts[0]}, interior={counts[1]}")
 
     return ParticleDataset(all_patches, all_labels)
 
@@ -357,94 +359,131 @@ def load_pairs_from_dir(directory, tif_ext=".tif", csv_ext=".csv"):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Visualización de batches
+# Visualización de patches individuales
 # ──────────────────────────────────────────────────────────────────────────────
 
-CLASS_NAMES_VIS = {0: 'No borde', 1: 'Borde'}
+CLASS_NAMES_VIS = {0: 'Borde', 1: 'Interior'}
 
 
-def visualize_batch(patches, labels, batch_idx=0, save_path=None):
+def visualize_patch(patch, label, patch_idx=0, save_dir=None, save_tiff=True):
     '''
-    Visualiza todas las imágenes de un batch en una cuadrícula.
+    Visualiza un único parche con sus dos canales solapados (overlay RGB)
+    y opcionalmente lo guarda como figura PNG y/o TIFF de 2 canales para Fiji.
 
-    Cada imagen se muestra con dos subpaneles: canal rojo (estáticas) arriba
-    y canal verde (elípticas) abajo. El título de cada columna indica la
-    etiqueta de clase de esa partícula.
+    La visualización overlay mapea:
+      - Canal rojo  (estáticas)  → rojo
+      - Canal verde (elípticas)  → verde
+    ambos superpuestos en una imagen RGB para apreciar la colocalización.
+
+    Los TIFF se guardan con forma (2, H, W) y dtype float32, listos para
+    abrirse en Fiji con "Image > Color > Make Composite".
 
     Args:
-        patches   (torch.Tensor | np.ndarray): Batch de parches (N, 2, H, W).
-        labels    (torch.Tensor | np.ndarray): Etiquetas del batch (N,) o (N, 1).
-        batch_idx (int): Índice del batch (para el título de la figura).
-        save_path (str | None): Ruta donde guardar la figura. None = no guardar.
+        patch     (np.ndarray): Parche de forma (2, H, W), valores en [0, 1].
+        label     (int):        Etiqueta de clase (0=borde, 1=interior).
+        patch_idx (int):        Índice del parche (para nombres de archivo y título).
+        save_dir  (str | None): Directorio donde guardar los archivos.
+                                None = no guardar nada.
+        save_tiff (bool):       Si True, guarda también un TIFF de 2 canales
+                                compatible con Fiji (default: True).
 
     Returns:
         matplotlib.figure.Figure: La figura generada.
     '''
     import matplotlib.pyplot as plt
-    import matplotlib.gridspec as gridspec
+    from pathlib import Path
 
-    if hasattr(patches, 'numpy'):
-        patches = patches.numpy()
-    if hasattr(labels, 'numpy'):
-        labels = labels.numpy()
+    if hasattr(patch, 'numpy'):
+        patch = patch.numpy()
+    patch = np.array(patch, dtype=np.float32)
 
-    labels = np.array(labels).flatten()
-    n      = len(labels)
+    etiqueta  = CLASS_NAMES_VIS.get(int(label), str(int(label)))
+    color_tit = '#c0392b' if int(label) == 0 else '#2980b9'
 
-    fig = plt.figure(figsize=(max(2 * n, 6), 5), constrained_layout=True)
-    fig.suptitle(f'Batch {batch_idx}  —  {n} partículas',
-                 fontsize=13, fontweight='bold')
+    # ── Construir imagen RGB overlay ─────────────────────────────────────────
+    h, w  = patch.shape[1], patch.shape[2]
+    rgb   = np.zeros((h, w, 3), dtype=np.float32)
+    rgb[..., 0] = patch[0]   # canal rojo  → R
+    rgb[..., 1] = patch[1]   # canal verde → G
+    # canal B = 0 (no hay tercer canal)
 
-    gs = gridspec.GridSpec(2, n, figure=fig, hspace=0.05, wspace=0.15)
+    # ── Figura con tres paneles: rojo | verde | overlay ───────────────────────
+    fig, axes = plt.subplots(1, 3, figsize=(7, 2.8), constrained_layout=True)
+    fig.suptitle(f'Parche {patch_idx}  —  {etiqueta}',
+                 fontsize=11, fontweight='bold', color=color_tit)
 
-    canal_labels = ['Rojo\n(estáticas)', 'Verde\n(elípticas)']
-    cmaps        = ['Reds', 'Greens']
+    axes[0].imshow(patch[0], cmap='Reds',   vmin=0, vmax=1)
+    axes[0].set_title('Rojo\n(estáticas)',   fontsize=8)
 
-    for col in range(n):
-        patch     = patches[col]
-        etiqueta  = CLASS_NAMES_VIS.get(int(labels[col]), str(int(labels[col])))
-        color_tit = '#c0392b' if labels[col] == 1 else '#2980b9'
+    axes[1].imshow(patch[1], cmap='Greens', vmin=0, vmax=1)
+    axes[1].set_title('Verde\n(elípticas)', fontsize=8)
 
-        for row in range(2):
-            ax = fig.add_subplot(gs[row, col])
-            ax.imshow(patch[row], cmap=cmaps[row], vmin=0, vmax=1)
-            ax.set_xticks([]); ax.set_yticks([])
+    axes[2].imshow(rgb, vmin=0, vmax=1)
+    axes[2].set_title('Overlay\n(R+G)',     fontsize=8)
 
-            if col == 0:
-                ax.set_ylabel(canal_labels[row], fontsize=8,
-                              rotation=0, labelpad=45, va='center')
-            if row == 0:
-                ax.set_title(etiqueta, fontsize=9, color=color_tit,
-                             fontweight='bold', pad=3)
+    for ax in axes:
+        ax.set_xticks([]); ax.set_yticks([])
 
-    if save_path:
-        fig.savefig(save_path, dpi=120, bbox_inches='tight')
-        print(f"  Batch {batch_idx} guardado en: {save_path}")
+    # ── Guardado ──────────────────────────────────────────────────────────────
+    if save_dir:
+        out = Path(save_dir)
+        out.mkdir(parents=True, exist_ok=True)
+
+        # PNG de la figura
+        png_path = out / f"patch_{patch_idx:04d}_{etiqueta.lower()}.png"
+        fig.savefig(str(png_path), dpi=120, bbox_inches='tight')
+        print(f"  Parche {patch_idx} PNG guardado en: {png_path}")
+
+        # TIFF de 2 canales para Fiji
+        if save_tiff:
+            tif_path = out / f"patch_{patch_idx:04d}_{etiqueta.lower()}.tif"
+            # shape (2, H, W), float32 normalizado [0,1]
+            tifffile.imwrite(str(tif_path), patch, imagej=True,
+                             metadata={'axes': 'CYX'})
+            print(f"  Parche {patch_idx} TIFF guardado en: {tif_path}")
 
     plt.show()
     return fig
 
 
-def visualize_loader(loader, n_batches=1, save_dir=None):
+def visualize_loader(loader, n_patches=10, save_dir=None, save_tiff=True):
     '''
-    Visualiza los primeros n_batches batches de un DataLoader.
+    Visualiza los primeros n_patches parches de un DataLoader,
+    generando una figura individual por parche.
+
+    Itera sobre los batches y extrae parches uno a uno hasta alcanzar
+    el número solicitado.
 
     Args:
         loader    (DataLoader): DataLoader de entrenamiento o validación.
-        n_batches (int): Número de batches a mostrar (default: 1).
-        save_dir  (str | None): Directorio donde guardar las figuras.
-                  None = no guardar. Ej: "visualizacion_batches/".
+        n_patches (int):        Número total de parches a visualizar (default: 10).
+        save_dir  (str | None): Directorio donde guardar figuras PNG y TIFFs.
+                                None = no guardar. Ej: "visualizacion_patches/".
+        save_tiff (bool):       Si True, guarda también TIFFs de 2 canales
+                                compatibles con Fiji (default: True).
     '''
     import matplotlib.pyplot as plt
-    from pathlib import Path
 
-    if save_dir:
-        Path(save_dir).mkdir(parents=True, exist_ok=True)
-
-    for batch_idx, (patches, labels) in enumerate(loader):
-        if batch_idx >= n_batches:
+    count = 0
+    for patches, labels in loader:
+        if count >= n_patches:
             break
-        save_path = (str(Path(save_dir) / f"batch_{batch_idx:03d}.png")
-                     if save_dir else None)
-        visualize_batch(patches, labels, batch_idx=batch_idx, save_path=save_path)
-        plt.close('all')
+
+        if hasattr(patches, 'numpy'):
+            patches = patches.numpy()
+        if hasattr(labels, 'numpy'):
+            labels = labels.numpy()
+
+        labels = np.array(labels).flatten()
+
+        for i in range(len(labels)):
+            if count >= n_patches:
+                break
+            visualize_patch(patches[i], labels[i],
+                            patch_idx=count,
+                            save_dir=save_dir,
+                            save_tiff=save_tiff)
+            plt.close('all')
+            count += 1
+
+    print(f"\nVisualización completada: {count} parches procesados.")

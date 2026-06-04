@@ -12,7 +12,7 @@ from funciones_auxiliares import (load_tif_image, load_labels_csv,
                                    load_pairs_from_dir)
 from modelo_CNN import MitochondriaContextCNN
 
-CLASS_NAMES = ['No borde', 'Borde']
+CLASS_NAMES = ['Borde', 'Interior']
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -99,6 +99,9 @@ def classify_from_tif(model_path, tif_path, positions, patch_size=64):
         print(f"  (Para obtener el umbral óptimo entrena el modelo al menos una vez "
               f"con el código actualizado)")
 
+    # Guardar umbral para que classify_from_csv pueda pasarlo a evaluate_results
+    classify_from_tif._ultimo_umbral = umbral
+
     if isinstance(tif_path, str):
         tif_path  = [tif_path]
         positions = [positions]
@@ -141,7 +144,7 @@ def calcular_metricas(scores, true_labels):
 
     Args:
         scores      (array-like): Probabilidades de clase Borde.
-        true_labels (array-like): Etiquetas reales (0=No borde, 1=Borde).
+        true_labels (array-like): Etiquetas reales (0=Borde, 1=Interior).
 
     Returns:
         dict con claves: TP, TN, FP, FN, recall, precision, f1, kappa,
@@ -178,7 +181,84 @@ def calcular_metricas(scores, true_labels):
             'umbral_optimo': umbral_optimo}
 
 
-def evaluate_results(results, true_labels, save_dir=None):
+
+def plot_tabla_umbrales(scores, true_labels, save_dir=None, umbral_actual=None):
+    """
+    Genera una tabla consola con TP/TN/FP/FN/Recall/Precision/F1 para
+    distintos umbrales, y guarda una curva Umbral vs métricas en disco.
+    Útil para elegir el umbral óptimo sobre datos de inferencia etiquetados.
+
+    Args:
+        scores        (array-like): Probabilidades de clase Interior.
+        true_labels   (array-like): Etiquetas reales (0=Borde, 1=Interior).
+        save_dir      (str|None):   Directorio donde guardar la curva.
+        umbral_actual (float|None): Umbral cargado del .txt, para marcarlo.
+    """
+    import os
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from sklearn.metrics import precision_recall_curve
+
+    scores      = np.array(scores)
+    true_labels = np.array(true_labels)
+
+    # ── Tabla por consola ─────────────────────────────────────────────────────
+    umbrales_tabla = [0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45,
+                      0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80]
+    sep = "=" * 75
+    print(f"\n{sep}")
+    print(f"  TABLA DE UMBRALES — SOBRE DATOS DE INFERENCIA")
+    print(f"{sep}")
+    print(f"  {'Umbral':>7}  {'TP':>4}  {'TN':>4}  {'FP':>4}  {'FN':>4}  "
+          f"{'Recall':>8}  {'Precision':>10}  {'F1':>7}")
+    print(f"  {'─'*68}")
+    for u in umbrales_tabla:
+        preds = (scores >= u).astype(int)
+        TP = int(((preds == 1) & (true_labels == 1)).sum())
+        TN = int(((preds == 0) & (true_labels == 0)).sum())
+        FP = int(((preds == 1) & (true_labels == 0)).sum())
+        FN = int(((preds == 0) & (true_labels == 1)).sum())
+        rec  = 100 * TP / (TP + FN) if (TP + FN) > 0 else 0.0
+        prec = 100 * TP / (TP + FP) if (TP + FP) > 0 else 0.0
+        f1   = (2 * prec * rec / (prec + rec)) if (prec + rec) > 0 else 0.0
+        marca = " ←" if umbral_actual is not None and abs(u - umbral_actual) < 0.026 else ""
+        print(f"  {u:>7.2f}  {TP:>4}  {TN:>4}  {FP:>4}  {FN:>4}  "
+              f"{rec:>7.1f}%  {prec:>9.1f}%  {f1:>6.1f}%{marca}")
+    print(f"{sep}\n")
+
+    # ── Curva umbral sobre datos de inferencia ────────────────────────────────
+    prec_th, rec_th, thresholds_th = precision_recall_curve(true_labels, scores)
+    prec_th = prec_th[:-1]
+    rec_th  = rec_th[:-1]
+    f1_th   = np.where((prec_th + rec_th) > 0,
+                       2 * prec_th * rec_th / (prec_th + rec_th), 0)
+
+    if save_dir is None:
+        save_dir = "resultados_clasificacion"
+    os.makedirs(save_dir, exist_ok=True)
+    path_umbral = os.path.join(save_dir, "curva_umbral_inferencia.png")
+
+    fig_u, ax_u = plt.subplots(figsize=(8, 5))
+    ax_u.plot(thresholds_th, rec_th,  color='steelblue',  lw=2, label='Recall (↑ = menos FN)')
+    ax_u.plot(thresholds_th, prec_th, color='darkorange',  lw=2, label='Precision (↑ = menos FP)')
+    ax_u.plot(thresholds_th, f1_th,   color='seagreen',    lw=2, label='F1')
+    if umbral_actual is not None:
+        ax_u.axvline(umbral_actual, color='gray', linestyle='--', alpha=0.8,
+                     label=f'Umbral actual = {umbral_actual:.3f}')
+    ax_u.set_xlim([0.0, 1.0]); ax_u.set_ylim([0.0, 1.05])
+    ax_u.set_xlabel('Umbral de decisión (prob. Interior)', fontsize=12)
+    ax_u.set_ylabel('Valor de la métrica', fontsize=12)
+    ax_u.set_title('Umbral vs Recall / Precision / F1  —  Datos de inferencia\n'
+                   'Mueve el umbral a la izquierda para más Recall (menos FN)', fontsize=11)
+    ax_u.legend(loc='center right', fontsize=10)
+    ax_u.grid(True, alpha=0.3)
+    fig_u.tight_layout()
+    fig_u.savefig(path_umbral, dpi=150, bbox_inches='tight')
+    plt.close(fig_u)
+    print(f"  Curva umbral (inferencia) guardada en: {path_umbral}")
+
+def evaluate_results(results, true_labels, save_dir=None, umbral_actual=None):
     """
     Compara predicciones con etiquetas reales, imprime todas las métricas
     por consola y genera las curvas ROC y PR guardándolas en save_dir.
@@ -281,6 +361,10 @@ def evaluate_results(results, true_labels, save_dir=None):
     plt.close(fig_pr)
     print(f"  Curva PR  guardada en: {path_pr}")
 
+    # ── Tabla de umbrales sobre datos de inferencia ──────────────────────────
+    plot_tabla_umbrales(scores, true_labels,
+                        save_dir=save_dir, umbral_actual=umbral_actual)
+
     return {'auc': roc_auc, 'avg_precision': avg_precision,
             'recall': m['recall'], 'precision': m['precision'],
             'f1': m['f1'], 'kappa': m['kappa']}
@@ -356,7 +440,7 @@ def save_results_to_csv(csv_path, results_per_csv, aisladas_mask=None,
         lf.write(f"Clasificación de: {csv_path}\n")
         lf.write(f"{'─'*70}\n")
         lf.write(f"{'#':>5}  {'y':>7}  {'x':>7}  {'clasificacion':>13}  "
-                 f"{'P(No borde)':>11}  {'P(Borde)':>9}\n")
+                 f"{'P(Borde)':>11}  {'P(Interior)':>9}\n")
         lf.write(f"{'─'*70}\n")
 
         # Columnas y/x — buscar nombres case-insensitive
@@ -368,14 +452,14 @@ def save_results_to_csv(csv_path, results_per_csv, aisladas_mask=None,
             p_nb = f"{row['prob_no_borde']:.4f}" if not pd.isna(row['prob_no_borde']) else "  —   "
             p_b  = f"{row['prob_borde']:.4f}"    if not pd.isna(row['prob_borde'])    else "  —   "
             lf.write(f"{i+1:>5}  {row[col_y]:>7}  {row[col_x]:>7}  "
-                     f"{row['clasificacion']:>13}  {p_nb:>11}  {p_b:>9}\n")
+                     f"{row['clasificacion']:>13}  {p_b:>11}  {p_nb:>9}\n")
 
         lf.write(f"{'─'*70}\n")
         n_borde   = (df['clasificacion'] == 'Borde').sum()
-        n_noborde = (df['clasificacion'] == 'No borde').sum()
+        n_noborde = (df['clasificacion'] == 'Interior').sum()
         n_aislada = (df['clasificacion'] == 'Aislada').sum()
         lf.write(f"Total: {len(df)}  |  Borde: {n_borde}  |  "
-                 f"No borde: {n_noborde}  |  Aislada: {n_aislada}\n")
+                 f"Interior: {n_noborde}  |  Aislada: {n_aislada}\n")
 
     print(f"  Log detallado guardado en: {log_path}")
     return str(out_path)
@@ -563,7 +647,10 @@ def classify_from_csv(model_path, tif_path, csv_path, patch_size=64,
 
         print(f"\nModo evaluación: {len(all_results_red)} partículas "
               f"clasificadas por la red (aisladas excluidas previamente).")
-        evaluate_results(all_results_red, all_true_labels, save_dir=save_dir)
+        # Pasar el umbral cargado del .txt para marcarlo en la curva y la tabla
+        umbral_cargado = getattr(classify_from_csv, "_ultimo_umbral", None)
+        evaluate_results(all_results_red, all_true_labels,
+                         save_dir=save_dir, umbral_actual=umbral_cargado)
     else:
         print(f"\nModo inferencia completado.")
 
@@ -575,16 +662,16 @@ if __name__ == "__main__":
     MODEL_PATH = "best_mito_classifier.pth"
 
     # ── Opción A: una sola imagen ─────────────────────────────────────────────
-    # TIF_PATH = "datos/SUb_01_2_merged.tif"
-    # CSV_PATH = "datos/SUb_01_2_datos_training.csv"  # con 'clase' → evaluación
-    # CSV_PATH = "datos/SUb_01_2_nuevos.csv"          # sin 'clase' → inferencia
+    TIF_PATH = "../datos_clasificar/SUb_02_10_orig.tif"
+    CSV_PATH = "../datos_clasificar/SUb_02_10_orig.csv" 
+    
 
     # ── Opción B: listas manuales ─────────────────────────────────────────────
     # TIF_PATH = ["datos/img1.tif", "datos/img2.tif"]
     # CSV_PATH = ["datos/img1.csv", "datos/img2.csv"]
 
     # ── Opción C: directorio completo ─────────────────────────────────────────
-    TIF_PATH, CSV_PATH = load_pairs_from_dir("data_augmentation")
+    #TIF_PATH, CSV_PATH = load_pairs_from_dir("data_augmentation")
 
     # Directorio donde guardar curva_ROC.png y curva_PR.png (modo evaluación)
     # None = se usa 'resultados_clasificacion/' por defecto
