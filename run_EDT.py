@@ -23,7 +23,9 @@ import detectar_aisladas   # debe estar en el mismo directorio que este archivo
 # ══════════════════════════════════════════════════════════════════════════════
 
 # MODO = "evaluar"       # Modo 1: evaluar el método con parámetros fijos (un par)
-MODO = "evaluar_dir"   # Modo 2: evaluar con parámetros fijos en un directorio
+# MODO = "evaluar_dir"   # Modo 2: evaluar con parámetros fijos en un directorio
+MODO = "evaluar_completo"  # Modo 2b: clasifica + CSV de clasificación y métricas
+                           #          (individuales + global) en 'resultados_EDT'
 # MODO = "barrer"        # Modo 3: barrido de parámetros (un par)
 # MODO = "barrer_dir"    # Modo 4: barrido GLOBAL acumulado sobre un directorio
 # MODO = "filtrar"       # Modo 5: filtra y genera <base>_filtrado.csv (un par)
@@ -41,7 +43,7 @@ TIF = "../datos/definitivos/SUb_02_8.tif"
 CSV = "../datos/definitivos/SUb_02_8.csv"
 
 # --- Para los modos de DIRECTORIO (evaluar_dir, barrer_dir, filtrar_dir) ---
-DIR = "../datos/definitivos"
+DIR = "../datos_clasificar"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -85,6 +87,9 @@ GUARDAR_CSV     = "resultado.csv"     # detalle por partícula (modos de un par)
 GUARDAR_FIGURA  = "deteccion.png"     # overlay TP/FP/FN/TN + banda θ (modo evaluar)
 MOSTRAR_FALLOS  = True                # listar FP/FN con coordenadas (modo evaluar)
 GUARDAR_BARRIDO = "barrido.csv"       # tabla del barrido (modos barrer)
+
+# Directorio de salida del modo 'evaluar_completo'
+OUT_DIR_EVAL    = "resultados_EDT"    # CSVs clasificados + métricas (ind. y global)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -135,7 +140,7 @@ def construir_argv():
     # ── Fuente de datos según el modo ─────────────────────────────────────────
     if MODO in ("evaluar", "barrer", "filtrar", "pintar_edt", "ver_mascaras"):
         argv += ["--tif", TIF, "--csv", CSV]
-    elif MODO in ("evaluar_dir", "barrer_dir", "filtrar_dir"):
+    elif MODO in ("evaluar_dir", "barrer_dir", "filtrar_dir", "evaluar_completo"):
         argv += ["--dir", DIR]
     else:
         raise ValueError(f"MODO desconocido: {MODO!r}")
@@ -158,6 +163,8 @@ def construir_argv():
             _añadir_lista(argv, "--edt-colores", COLORES_EDT)
     elif MODO == "ver_mascaras":
         argv += ["--guardar-mascaras", GUARDAR_MASCARAS]
+    elif MODO == "evaluar_completo":
+        argv += ["--evaluar-completo", "--out-dir", OUT_DIR_EVAL]
     else:
         # evaluar / evaluar_dir
         if GUARDAR_CSV:

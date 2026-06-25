@@ -51,6 +51,7 @@ import argparse
 import os
 import sys
 import glob
+import math
 from pathlib import Path
 
 import numpy as np
@@ -324,6 +325,78 @@ def metricas_desde_confusion(c):
         'total': total, 'aciertos': aciertos, 'accuracy': accuracy,
         'precision': precision, 'recall': recall, 'f1': f1, 'kappa': kappa,
         **c,
+    }
+
+
+def metricas_completas(c):
+    '''
+    Calcula TODAS las métricas derivables de la matriz de confusión binaria
+    {TP, TN, FP, FN} con la clase positiva ya fijada por quien construye c.
+
+    En esta evaluación la clase positiva es INTERIOR y la negativa BORDE, igual
+    que en la CNN, de modo que:
+        TP = predicho Interior y era Interior
+        FP = predicho Interior y era Borde
+        FN = predicho Borde    y era Interior
+        TN = predicho Borde    y era Borde
+
+    Returns:
+        dict con TP, TN, FP, FN, n_evaluadas y las métricas:
+        accuracy, precision (PPV), recall (TPR/sensibilidad), specificity (TNR),
+        npv, f1, balanced_accuracy, mcc, kappa, fpr, fnr, fdr, for_ (false
+        omission rate), youden_j y prevalence.
+    '''
+    TP, TN, FP, FN = c['TP'], c['TN'], c['FP'], c['FN']
+    total = TP + TN + FP + FN
+    P     = TP + FN          # positivos reales (interior)
+    pred_P = TP + FP         # predichos positivos
+
+    def _s(num, den):
+        return num / den if den else 0.0
+
+    accuracy    = _s(TP + TN, total)
+    precision   = _s(TP, TP + FP)      # PPV
+    recall      = _s(TP, TP + FN)      # TPR / sensibilidad
+    specificity = _s(TN, TN + FP)      # TNR
+    npv         = _s(TN, TN + FN)
+    f1          = _s(2 * precision * recall, precision + recall)
+    fpr         = _s(FP, FP + TN)      # 1 - specificity
+    fnr         = _s(FN, FN + TP)      # 1 - recall
+    fdr         = _s(FP, FP + TP)      # 1 - precision
+    for_        = _s(FN, FN + TN)      # false omission rate
+    bal_acc     = (recall + specificity) / 2
+    youden      = recall + specificity - 1
+    prevalence  = _s(P, total)
+
+    # Matthews Correlation Coefficient
+    mcc_den = math.sqrt((TP + FP) * (TP + FN) * (TN + FP) * (TN + FN))
+    mcc     = ((TP * TN - FP * FN) / mcc_den) if mcc_den > 0 else 0.0
+
+    # Cohen's kappa (binario), mismo cálculo que metricas_desde_confusion
+    po     = accuracy
+    p_real = _s(P, total)
+    p_pred = _s(pred_P, total)
+    pe     = p_real * p_pred + (1 - p_real) * (1 - p_pred)
+    kappa  = _s(po - pe, 1 - pe)
+
+    return {
+        'TP': TP, 'TN': TN, 'FP': FP, 'FN': FN,
+        'n_evaluadas':       total,
+        'accuracy':          accuracy,
+        'precision':         precision,
+        'recall':            recall,
+        'specificity':       specificity,
+        'npv':               npv,
+        'f1':                f1,
+        'balanced_accuracy': bal_acc,
+        'mcc':               mcc,
+        'kappa':             kappa,
+        'fpr':               fpr,
+        'fnr':               fnr,
+        'fdr':               fdr,
+        'for':               for_,
+        'youden_j':          youden,
+        'prevalence':        prevalence,
     }
 
 
@@ -769,6 +842,175 @@ def procesar_par(tif_path, csv_path, args, out_dir=None, imprimir=True):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Evaluación COMPLETA: CSV clasificado por archivo + métricas individuales y
+# global (micro) Interior(+)/Borde(−), todo en un directorio de salida.
+# ──────────────────────────────────────────────────────────────────────────────
+
+def evaluar_completo_dir(tif_paths, csv_paths, args, out_dir='resultados_EDT'):
+    '''
+    Para cada par (tif, csv) con columna 'clase':
+      1. Clasifica con la EDT al verde (Aislada / Interior / Borde).
+      2. Guarda <base>_clasificado_EDT.csv conservando las columnas originales y
+         añadiendo 'clasificacion' (3 categorías), 'V_dist_verde' y 'V_en_verde'.
+      3. Calcula la matriz de confusión Interior(+)/Borde(−) EXCLUYENDO las
+         partículas cuya etiqueta real es 'aislada' (igual que la CNN) y deriva
+         todas las métricas posibles de TP/TN/FP/FN.
+      4. Acumula la confusión global en micro (suma de TP/TN/FP/FN de todos).
+      5. Imprime por pantalla la clasificación de AISLADAS (Etapa 1), por archivo
+         y global, como métrica informativa del detector geométrico.
+
+    Salidas (todas en out_dir):
+      - <base>_clasificado_EDT.csv   (uno por archivo)
+      - metricas_EDT.csv             (una fila por archivo + fila GLOBAL_micro)
+
+    Args:
+        tif_paths (list[str]): rutas a los .tif.
+        csv_paths (list[str]): rutas a los .csv (con columna 'clase').
+        args      (Namespace): parámetros del método (umbral_dist, conectividad…).
+        out_dir   (str):       directorio de salida (default 'resultados_EDT').
+    '''
+    os.makedirs(out_dir, exist_ok=True)
+
+    filas_metricas = []
+    glob_ib  = {'TP': 0, 'TN': 0, 'FP': 0, 'FN': 0}   # interior/borde (micro)
+    glob_ais = {'TP': 0, 'TN': 0, 'FP': 0, 'FN': 0}   # aisladas (a pantalla)
+    n_con_etiquetas = 0
+
+    print("\n" + "═" * 74)
+    print(f"  EVALUACIÓN COMPLETA EDT  —  {len(tif_paths)} archivo/s")
+    print(f"  Métrica reportada : INTERIOR (+) vs BORDE (−)  "
+          f"[aisladas excluidas por etiqueta real]")
+    print(f"  Parámetros        : θ={args.umbral_dist:g} px | "
+          f"conectividad={args.conectividad} | "
+          f"umbral_verde={'Otsu' if args.umbral_verde is None else args.umbral_verde}")
+    print(f"  Salida            : {os.path.abspath(out_dir)}")
+    print("═" * 74)
+
+    for tif_path, csv_path in zip(tif_paths, csv_paths):
+        base = os.path.splitext(os.path.basename(csv_path))[0]
+
+        canal_rojo, canal_verde = load_tif_image(tif_path)
+        positions, clases_raw, y_true = cargar_ground_truth(csv_path)
+
+        if y_true is None:
+            print(f"\n  [AVISO] {base}: sin columna 'clase' — se omite "
+                  f"(no se pueden calcular métricas).")
+            continue
+        n_con_etiquetas += 1
+
+        mask, info = clasificar_aisladas_verde(
+            canal_rojo, canal_verde, positions,
+            umbral_verde=args.umbral_verde, umbral_rojo=args.umbral_rojo,
+            umbral_dist=args.umbral_dist, usar_conectividad=args.conectividad,
+            umbral_verde_bajo=args.umbral_verde_bajo, verde_sigma=args.verde_sigma,
+            verde_cierre=args.verde_cierre, verde_rellenar=args.verde_rellenar)
+
+        y_true_interior = np.array([c in CLASES_INTERIOR for c in clases_raw], dtype=bool)
+        y_true_borde    = np.array([c in CLASES_BORDE    for c in clases_raw], dtype=bool)
+
+        # ── Columna de clasificación con 3 categorías ─────────────────────────
+        clasif = np.where(mask, 'Aislada',
+                          np.where(info['interior'], 'Interior', 'Borde'))
+
+        # ── CSV de clasificación por archivo (conserva columnas originales) ───
+        df_out = pd.read_csv(csv_path, encoding='utf-8-sig')
+        if len(df_out) != len(clasif):
+            raise ValueError(f"{base}: desajuste de filas entre CSV ({len(df_out)}) "
+                             f"y posiciones ({len(clasif)}).")
+        df_out['clasificacion'] = clasif
+        df_out['V_dist_verde']  = np.round(info['dist_verde'], 2)
+        df_out['V_en_verde']    = info['en_verde'].astype(int)
+        ruta_clasif = os.path.join(out_dir, base + '_clasificado_EDT.csv')
+        df_out.to_csv(ruta_clasif, index=False, encoding='utf-8-sig')
+
+        # ── Etapa 1: AISLADA vs RESTO (a pantalla) ────────────────────────────
+        m_ais = evaluar(f"[{base}] Etapa 1: AISLADA vs RESTO", mask, y_true,
+                        clase_positiva='aislada', imprimir=True)
+        for k in ('TP', 'TN', 'FP', 'FN'):
+            glob_ais[k] += m_ais[k]
+
+        # ── Etapa 2: INTERIOR(+) vs BORDE(−), excluyendo GT aislada ───────────
+        filtro  = y_true_interior | y_true_borde     # quita las etiquetadas 'aislada'
+        conf_ib = confusion(info['interior'][filtro], y_true_interior[filtro])
+        for k in ('TP', 'TN', 'FP', 'FN'):
+            glob_ib[k] += conf_ib[k]
+
+        m_ib = metricas_completas(conf_ib)
+        print(f"   → Interior(+)/Borde(−): "
+              f"TP={m_ib['TP']} FP={m_ib['FP']} FN={m_ib['FN']} TN={m_ib['TN']}  |  "
+              f"F1={m_ib['f1']:.4f}  Acc={m_ib['accuracy']:.4f}  "
+              f"Kappa={m_ib['kappa']:.4f}  MCC={m_ib['mcc']:.4f}")
+        print(f"   CSV clasificado: {ruta_clasif}")
+
+        fila = {
+            'archivo':          base,
+            'n_total':          len(positions),
+            'n_aisladas_gt':    int(np.sum(y_true)),
+            'umbral_dist':      args.umbral_dist,
+            'umbral_verde_tg':  round(info['umbral_verde'], 4),
+            'conectividad':     int(args.conectividad),
+        }
+        fila.update({k: (round(v, 6) if isinstance(v, float) else v)
+                     for k, v in m_ib.items()})
+        filas_metricas.append(fila)
+
+    if n_con_etiquetas == 0:
+        print("\n  [ERROR] Ningún archivo tenía columna 'clase'; nada que evaluar.")
+        return
+
+    # ── Fila GLOBAL en micro (suma de confusiones) ────────────────────────────
+    m_glob = metricas_completas(glob_ib)
+    fila_glob = {
+        'archivo':         'GLOBAL_micro',
+        'n_total':         sum(f['n_total']       for f in filas_metricas),
+        'n_aisladas_gt':   sum(f['n_aisladas_gt'] for f in filas_metricas),
+        'umbral_dist':     args.umbral_dist,
+        'umbral_verde_tg': ('Otsu_variable' if args.umbral_verde is None
+                            else round(float(args.umbral_verde), 4)),
+        'conectividad':    int(args.conectividad),
+    }
+    fila_glob.update({k: (round(v, 6) if isinstance(v, float) else v)
+                      for k, v in m_glob.items()})
+
+    df_met = pd.DataFrame(filas_metricas + [fila_glob])
+    ruta_met = os.path.join(out_dir, 'metricas_EDT.csv')
+    df_met.to_csv(ruta_met, index=False, encoding='utf-8-sig')
+
+    # ── Resumen GLOBAL por pantalla ───────────────────────────────────────────
+    sep = "═" * 74
+    print(f"\n{sep}")
+    print(f"  RESUMEN GLOBAL (micro)  —  {n_con_etiquetas} archivo/s con etiquetas")
+    print(f"{sep}")
+    print(f"  INTERIOR (+) vs BORDE (−):")
+    print(f"    TP={m_glob['TP']}  TN={m_glob['TN']}  "
+          f"FP={m_glob['FP']}  FN={m_glob['FN']}  "
+          f"(n={m_glob['n_evaluadas']})")
+    print(f"    Accuracy   : {m_glob['accuracy']:.4f}")
+    print(f"    Precision  : {m_glob['precision']:.4f}")
+    print(f"    Recall     : {m_glob['recall']:.4f}")
+    print(f"    Specificity: {m_glob['specificity']:.4f}")
+    print(f"    F1         : {m_glob['f1']:.4f}")
+    print(f"    Bal. Acc.  : {m_glob['balanced_accuracy']:.4f}")
+    print(f"    MCC        : {m_glob['mcc']:.4f}")
+    print(f"    Kappa      : {m_glob['kappa']:.4f}")
+
+    m_ais_glob = metricas_completas(glob_ais)
+    print(f"\n  AISLADA vs RESTO (informativo, detector geométrico):")
+    print(f"    TP={glob_ais['TP']}  TN={glob_ais['TN']}  "
+          f"FP={glob_ais['FP']}  FN={glob_ais['FN']}")
+    print(f"    Precision  : {m_ais_glob['precision']:.4f}   "
+          f"Recall : {m_ais_glob['recall']:.4f}   "
+          f"F1 : {m_ais_glob['f1']:.4f}   "
+          f"Kappa : {m_ais_glob['kappa']:.4f}")
+    print(f"{sep}")
+    print(f"  [OK] Métricas guardadas en : {ruta_met}")
+    print(f"  [OK] CSVs clasificados en  : {os.path.abspath(out_dir)}/")
+    print(f"{sep}\n")
+
+    return df_met
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Filtrado -> CSV con columnas X, Y, clase, Filtradas
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -872,7 +1114,8 @@ def buscar_pares(directorio):
 
     for csv_path in csv_files:
         base = os.path.splitext(csv_path)[0]
-        if base.endswith("_deteccion") or base.endswith("_filtrado"):
+        if base.endswith("_deteccion") or base.endswith("_filtrado") \
+                or base.endswith("_clasificado_EDT"):
             continue
         tif_path = base + ".tif"
         if os.path.isfile(tif_path):
@@ -959,6 +1202,16 @@ def construir_parser():
     parser.add_argument("--guardar-barrido", default=None,
                         help="Exporta la tabla de barrido a este CSV. Solo con --barrer.")
 
+    # ── Evaluación completa (clasificación + métricas a CSV) ──────────────────
+    parser.add_argument("--evaluar-completo", action="store_true",
+                        help="Clasifica (Aislada/Interior/Borde), guarda un CSV "
+                             "clasificado por archivo y un CSV de métricas "
+                             "Interior(+)/Borde(−) individuales + global (micro). "
+                             "Requiere columna 'clase'.")
+    parser.add_argument("--out-dir", default="resultados_EDT",
+                        help="Directorio de salida para --evaluar-completo "
+                             "(default: resultados_EDT).")
+
     # ── Pintar el campo de la EDT ─────────────────────────────────────────────
     parser.add_argument("--guardar-edt", default=None,
                         help="Guarda una imagen del campo EDT en esta ruta (necesita --tif).")
@@ -1032,6 +1285,11 @@ def main(argv=None):
 
         print(f"\n  Directorio        : {os.path.abspath(args.dir)}")
         print(f"  Pares encontrados : {len(tif_paths)}")
+
+        # ── Evaluación completa: CSV clasificado + métricas a 'resultados_EDT' ─
+        if args.evaluar_completo:
+            evaluar_completo_dir(tif_paths, csv_paths, args, out_dir=args.out_dir)
+            return
 
         # ── Filtrado (un <base>_filtrado.csv por par) ─────────────────────────
         if args.filtrar:
@@ -1113,6 +1371,11 @@ def main(argv=None):
         if not os.path.isfile(path):
             print(f"[ERROR] No se encuentra: {path}")
             sys.exit(1)
+
+    # ── Evaluación completa sobre un solo par ─────────────────────────────────
+    if args.evaluar_completo:
+        evaluar_completo_dir([args.tif], [args.csv], args, out_dir=args.out_dir)
+        return
 
     # ── Filtrado -> <base>_filtrado.csv ───────────────────────────────────────
     if args.filtrar:
