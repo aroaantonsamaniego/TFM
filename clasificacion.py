@@ -8,7 +8,7 @@ from sklearn.metrics import roc_curve, auc, confusion_matrix, classification_rep
 
 from funciones_auxiliares import (load_tif_image,
                                    extract_patch_around_particle,
-                                   detectar_aisladas_geometrico,
+                                   detectar_aisladas_EDT,
                                    load_pairs_from_dir)
 from modelo_CNN import MitochondriaContextCNN
 
@@ -507,7 +507,8 @@ def save_results_to_csv(csv_path, results_per_csv, aisladas_mask=None,
 
 def classify_from_csv(model_path, tif_path, csv_path, patch_size=64,
                       save_dir=None,
-                      radio_grafo=100, max_vecinas=3, umbral_verde=0.01):
+                      umbral_verde=None, umbral_dist=2.0,
+                      usar_conectividad=False):
     """
     Clasifica partículas a partir de uno o varios pares TIFF + CSV.
 
@@ -522,16 +523,17 @@ def classify_from_csv(model_path, tif_path, csv_path, patch_size=64,
           AUC-ROC y Average Precision, y guarda las curvas ROC y PR en save_dir.
 
     SIN columna 'clase' (modo inferencia):
-        - Se ejecuta el detector geométrico automático de aisladas sobre cada
-          imagen (criterio C: sola Y lejos del verde) para identificar y
-          excluir las partículas aisladas.
+        - Se ejecuta el detector EDT de aisladas sobre cada imagen: se binariza
+          el verde (Otsu si umbral_verde=None), se calcula la transformada de
+          distancia al verde y una partícula se marca aislada si su distancia al
+          verde supera el umbral θ (umbral_dist). Así se excluyen las aisladas.
         - El resto se clasifica con la red.
         - Al final se reporta cuántas partículas se excluyeron como aisladas
           en cada imagen y en total.
 
     En ambos casos el CSV de salida incluye la columna 'clasificacion' con el
-    resultado ('Borde', 'Interior' o 'Aislada') para cada partícula, además
-    de columnas auxiliares 'dist_verde_px' y 'n_vecinas'.
+    resultado ('Borde', 'Interior' o 'Aislada') para cada partícula, además de
+    la columna auxiliar 'dist_verde_px' (distancia EDT al verde) en inferencia.
 
     Args:
         model_path   (str):             Ruta al .pth del modelo.
@@ -541,9 +543,10 @@ def classify_from_csv(model_path, tif_path, csv_path, patch_size=64,
         save_dir     (str | None):      Directorio donde guardar curva_ROC.png y
                                         curva_PR.png en modo evaluación.
                                         Si es None se usa 'resultados_clasificacion/'.
-        radio_grafo  (float):           Radio (px) para contar vecinas en modo inferencia.
-        max_vecinas  (int):             Máx. vecinas para considerar aislada.
-        umbral_verde (float):           Umbral de intensidad para definir verde.
+        umbral_verde (float | None):    Umbral de binarización del verde para la EDT.
+                                        None -> Otsu automático por imagen (recomendado).
+        umbral_dist  (float):           Umbral de distancia θ (px): aislada ⟺ d_g > θ.
+                                        Valor fijo obtenido del barrido de detectar_aisladas.
 
     Returns:
         list of dict: Una entrada por partícula NO aislada, con claves:
@@ -610,13 +613,14 @@ def classify_from_csv(model_path, tif_path, csv_path, patch_size=64,
             d2v       = None
             n_vecinas = None
         else:
-            # ── Sin etiquetas: detectar aisladas geométricamente ──────────────
-            print(f"\n  Detectando aisladas geométricamente en: {tif}")
-            mask_aisladas, d2v, n_vecinas = detectar_aisladas_geometrico(
+            # ── Sin etiquetas: detectar aisladas con EDT al verde ─────────────
+            print(f"\n  Detectando aisladas con EDT (verde) en: {tif}")
+            mask_aisladas, d2v, n_vecinas = detectar_aisladas_EDT(
                 canal_verde, positions_orig,
-                radio_grafo=radio_grafo,
-                max_vecinas=max_vecinas,
-                umbral_verde=umbral_verde,
+                canal_rojo=canal_rojo,
+                umbral_verde=umbral_verde,        # None -> Otsu automático por imagen
+                umbral_dist=umbral_dist,          # θ fijo (óptimo del barrido)
+                usar_conectividad=usar_conectividad,
             )
 
         n_aisladas    = int(mask_aisladas.sum())
@@ -673,7 +677,7 @@ def classify_from_csv(model_path, tif_path, csv_path, patch_size=64,
     for meta in meta_por_csv:
         n_aisl = int(meta['mask_aisladas'].sum())
         n_tot  = len(meta['mask_aisladas'])
-        modo   = "etiqueta" if evaluation_mode else "detector geométrico"
+        modo   = "etiqueta" if evaluation_mode else "detector EDT (verde)"
         print(f"  {Path(meta['csv']).name}: "
               f"{n_aisl}/{n_tot} excluidas ({modo})")
     print(f"  TOTAL: {total_aisladas} aisladas excluidas de "
@@ -720,6 +724,8 @@ if __name__ == "__main__":
     classify_from_csv(
         MODEL_PATH, TIF_PATH, CSV_PATH,
         save_dir=SAVE_DIR,
-        # Parámetros del detector geométrico (solo se usan sin columna 'clase'):
-        radio_grafo=100, max_vecinas=3, umbral_verde=0.01,
+        # Parámetros del detector EDT (solo se usan en modo inferencia, sin 'clase'):
+        umbral_verde=None,      # None -> Otsu (umbral del verde automático por imagen)
+        umbral_dist=16.0,        # θ fijo: pon aquí el óptimo de tu barrido
+        usar_conectividad=False,
     )

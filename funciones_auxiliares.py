@@ -4,6 +4,7 @@ import numpy as np
 import tifffile
 import pandas as pd
 from scipy.spatial import cKDTree
+from scipy import ndimage as ndi
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -110,56 +111,133 @@ def filtrar_aisladas_etiquetadas(positions, labels, clases_raw):
     return pos_filtradas, lbl_filtradas, n_eliminadas
 
 
-def detectar_aisladas_geometrico(canal_verde, positions,
+def detectar_aisladas_EDT(canal_verde, positions,
                                   radio_grafo=100, max_vecinas=3,
-                                  umbral_verde=0.01):
+                                  umbral_verde=0.01,
+                                  canal_rojo=None,
+                                  umbral_dist=2.0,
+                                  usar_conectividad=False,
+                                  umbral_rojo=None,
+                                  umbral_verde_bajo=None,
+                                  verde_sigma=0.0, verde_cierre=0,
+                                  verde_rellenar=False):
     '''
-    Detecta partículas aisladas automáticamente usando dos criterios geométricos
-    combinados (criterio C: sola Y lejos del verde):
+    Detecta partículas aisladas mediante la Transformada de Distancia Euclídea
+    (EDT) aplicada al canal verde, replicando el criterio de detectar_aisladas.py.
 
-      1. Número de vecinas en radio_grafo <= max_vecinas
-         (la partícula tiene pocas o ninguna partícula cerca).
-      2. Distancia al píxel verde más cercano >= min_dist_verde
-         (la partícula no está sobre ni cerca de la estructura mitocondrial).
+    Criterio (verdad de campo): una partícula es "aislada" si está FUERA de las
+    trazas verdes (ni en su interior ni en su borde). Procedimiento:
 
-    El umbral min_dist_verde se calcula automáticamente como el percentil 75
-    de las distancias al verde de todas las partículas, de forma que se adapta
-    a cada imagen sin necesidad de ajuste manual.
+      1. Mg  = canal_verde > t_g            (binarización del verde; Otsu si None).
+      2. D_g = distance_transform_edt(~Mg)  (distancia de CADA píxel a la traza
+                                             verde más cercana; el verde es el 0).
+      3. Para cada partícula (y, x) se lee d_g = D_g[y, x].
+      4. aislada ⟺ d_g > umbral_dist (θ). Si d_g ≤ θ → borde/interior (NO aislada).
+
+      (Opcional) Conectividad: si se pasa canal_rojo y usar_conectividad=True, una
+      partícula fuera de la banda θ se considera NO aislada cuando su isla roja
+      (rojo ∪ verde) toca una traza verde.
+
+    Mantiene el NOMBRE y el CONTRATO DE SALIDA de la versión anterior para que el
+    resto del código (clasificacion.py) no necesite ningún cambio. Los parámetros
+    radio_grafo y max_vecinas se aceptan solo por compatibilidad de llamada y NO
+    intervienen en el criterio EDT.
 
     Args:
         canal_verde  (np.ndarray): Canal verde normalizado (H, W).
         positions    (list of (y,x)): Coordenadas de las partículas.
-        radio_grafo  (float): Radio en px para contar vecinas (default: 100).
-        max_vecinas  (int):   Máximo de vecinas permitidas para ser aislada (default: 3).
-        umbral_verde (float): Umbral de intensidad para definir estructura verde (default: 0.01).
+        radio_grafo  (float): [IGNORADO] presente solo por compatibilidad.
+        max_vecinas  (int):   [IGNORADO] presente solo por compatibilidad.
+        umbral_verde (float|None): Umbral de binarización del verde. None -> Otsu.
+        canal_rojo   (np.ndarray|None): Canal rojo (solo si se usa conectividad).
+        umbral_dist  (float): Umbral de distancia θ en px. aislada ⟺ d_g > θ.
+        usar_conectividad (bool): Si True y canal_rojo no es None, comprueba si la
+                                  isla roja conecta con el verde.
+        umbral_rojo  (float|None): Umbral del rojo para conectividad. None -> Otsu.
+        umbral_verde_bajo (float|None): Umbral bajo de histéresis del verde.
+        verde_sigma  (float): Suavizado gaussiano del verde antes de umbralar.
+        verde_cierre (int):   Iteraciones de cierre morfológico de Mg.
+        verde_rellenar (bool): Rellenar huecos interiores de Mg.
 
     Returns:
         tuple: (mask_aisladas, d2v, n_vecinas)
                - mask_aisladas (np.ndarray bool): True = clasificada como aislada.
-               - d2v           (np.ndarray float): Distancia al verde de cada partícula.
-               - n_vecinas     (np.ndarray int):   Nº vecinas en radio_grafo.
+               - d2v           (np.ndarray float): Distancia EDT al verde por partícula.
+               - n_vecinas     (None): el criterio EDT no calcula vecinas, por lo
+                                       que se devuelve None (la columna 'n_vecinas'
+                                       se omite automáticamente en el CSV de salida).
     '''
-    coords = np.array([(x, y) for y, x in positions], dtype=np.float32)
-    n = len(coords)
+    # ── Umbral del verde (fijo o Otsu como respaldo) ──────────────────────────
+    def _umbral_auto(canal, umbral):
+        if umbral is not None:
+            return float(umbral)
+        try:
+            from skimage.filters import threshold_otsu
+            return float(threshold_otsu(canal))
+        except Exception:
+            return float(canal.mean())
 
-    # ── Distancia al verde más cercano ────────────────────────────────────────
-    ys_v, xs_v = np.where(canal_verde > umbral_verde)
-    if len(ys_v) == 0:
-        d2v = np.full(n, np.inf)
+    img = (ndi.gaussian_filter(canal_verde, verde_sigma)
+           if (verde_sigma and verde_sigma > 0) else canal_verde)
+
+    t_g = _umbral_auto(img, umbral_verde)
+
+    # ── Máscara binaria del verde Mg ──────────────────────────────────────────
+    if umbral_verde_bajo is not None:
+        try:
+            from skimage.filters import apply_hysteresis_threshold
+            Mg = apply_hysteresis_threshold(img, float(umbral_verde_bajo), t_g)
+        except Exception:
+            Mg = img > t_g
     else:
-        tree_verde = cKDTree(np.column_stack([xs_v, ys_v]))
-        d2v, _     = tree_verde.query(coords)
+        Mg = img > t_g
 
-    # ── Número de vecinas en radio_grafo ──────────────────────────────────────
-    tree_part = cKDTree(coords)
-    n_vecinas = np.array([len(tree_part.query_ball_point(c, radio_grafo)) - 1
-                          for c in coords])
+    if verde_cierre and verde_cierre > 0:
+        Mg = ndi.binary_closing(Mg, iterations=int(verde_cierre))
+    if verde_rellenar:
+        Mg = ndi.binary_fill_holes(Mg)
 
-    # ── Umbral de distancia al verde adaptativo (percentil 75) ───────────────
-    min_dist_verde = float(np.percentile(d2v, 75))
-    mask_aisladas  = (n_vecinas <= max_vecinas) & (d2v >= min_dist_verde)
+    Mg = np.asarray(Mg, dtype=bool)
 
-    return mask_aisladas, d2v, n_vecinas
+    # ── Campo de distancia al verde (EDT): el verde es el 0 ───────────────────
+    D_g = ndi.distance_transform_edt(~Mg)
+
+    # ── Etiquetas de componentes (rojo ∪ verde) para la conectividad ──────────
+    usar_con = bool(usar_conectividad) and (canal_rojo is not None)
+    if usar_con:
+        t_r = _umbral_auto(canal_rojo, umbral_rojo)
+        Mr  = canal_rojo > t_r
+        labels, _        = ndi.label(Mr | Mg)
+        labels_con_verde = set(np.unique(labels[Mg]).tolist())
+        labels_con_verde.discard(0)
+    else:
+        labels           = None
+        labels_con_verde = set()
+
+    # ── Decisión partícula a partícula ────────────────────────────────────────
+    H, W = canal_verde.shape
+    n = len(positions)
+    mask_aisladas = np.zeros(n, dtype=bool)
+    d2v           = np.zeros(n, dtype=float)
+
+    for i, (y, x) in enumerate(positions):
+        yy = min(max(int(round(float(y))), 0), H - 1)
+        xx = min(max(int(round(float(x))), 0), W - 1)
+        d  = float(D_g[yy, xx])
+        d2v[i] = d
+
+        if d <= umbral_dist:
+            mask_aisladas[i] = False          # dentro de la banda θ → borde/interior
+            continue
+
+        if usar_con:
+            lbl        = labels[yy, xx]
+            toca_verde = (lbl != 0 and lbl in labels_con_verde)
+            mask_aisladas[i] = not toca_verde
+        else:
+            mask_aisladas[i] = True           # fuera de la banda de θ → aislada
+
+    return mask_aisladas, d2v, None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
