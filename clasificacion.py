@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from sklearn.metrics import roc_curve, auc, confusion_matrix, classification_report
 
-from funciones_auxiliares import (load_tif_image, load_labels_csv,
+from funciones_auxiliares import (load_tif_image,
                                    extract_patch_around_particle,
                                    detectar_aisladas_geometrico,
                                    load_pairs_from_dir)
@@ -36,7 +36,7 @@ def classify_single_particle(model, canal_rojo, canal_verde, particle_center,
         particle_center (tuple): Coordenadas (y, x).
         patch_size      (int): Tamaño del recorte (default: 64).
         device          : Dispositivo torch.
-        umbral          (float): Umbral de decisión sobre prob. de clase Borde.
+        umbral          (float): Umbral de decisión sobre prob. de clase Interior (índice 1).
 
     Returns:
         tuple: (prediction_idx, probabilities, class_name)
@@ -137,6 +137,40 @@ def classify_from_tif(model_path, tif_path, positions, patch_size=64):
 # Evaluación (modo con etiquetas)
 # ──────────────────────────────────────────────────────────────────────────────
 
+def calcular_metricas_umbral(scores, true_labels, umbral):
+    '''
+    Calcula TP, TN, FP, FN y métricas para un umbral concreto.
+
+    Args:
+        scores      (array-like): Probabilidades de clase positiva.
+        true_labels (array-like): Etiquetas reales.
+        umbral      (float):      Umbral de decisión a aplicar.
+
+    Returns:
+        dict con claves: TP, TN, FP, FN, recall, precision, f1, kappa.
+    '''
+    scores      = np.array(scores)
+    true_labels = np.array(true_labels)
+
+    preds = (scores >= umbral).astype(int)
+    TP = int(((preds == 1) & (true_labels == 1)).sum())
+    TN = int(((preds == 0) & (true_labels == 0)).sum())
+    FP = int(((preds == 1) & (true_labels == 0)).sum())
+    FN = int(((preds == 0) & (true_labels == 1)).sum())
+
+    recall    = TP / (TP + FN) if (TP + FN) > 0 else 0.0
+    precision = TP / (TP + FP) if (TP + FP) > 0 else 0.0
+    f1        = (2 * precision * recall / (precision + recall)
+                 if (precision + recall) > 0 else 0.0)
+    kappa_num = 2 * (TP * TN - FN * FP)
+    kappa_den = (TP + FP) * (FP + TN) + (TP + FN) * (FN + TN)
+    kappa     = kappa_num / kappa_den if kappa_den > 0 else 0.0
+
+    return {'TP': TP, 'TN': TN, 'FP': FP, 'FN': FN,
+            'recall': recall, 'precision': precision,
+            'f1': f1, 'kappa': kappa}
+
+
 def calcular_metricas(scores, true_labels):
     '''
     Calcula TP, TN, FP, FN al umbral que maximiza F1 y devuelve todas
@@ -161,24 +195,9 @@ def calcular_metricas(scores, true_labels):
     idx_opt       = int(np.argmax(f1s))
     umbral_optimo = float(thresholds[idx_opt])
 
-    preds = (scores >= umbral_optimo).astype(int)
-    TP = int(((preds == 1) & (true_labels == 1)).sum())
-    TN = int(((preds == 0) & (true_labels == 0)).sum())
-    FP = int(((preds == 1) & (true_labels == 0)).sum())
-    FN = int(((preds == 0) & (true_labels == 1)).sum())
-
-    recall    = 100 * TP / (TP + FN) if (TP + FN) > 0 else 0.0
-    precision = 100 * TP / (TP + FP) if (TP + FP) > 0 else 0.0
-    f1        = (2 * precision * recall / (precision + recall)
-                 if (precision + recall) > 0 else 0.0)
-    kappa_num = 2 * (TP * TN - FN * FP)
-    kappa_den = (TP + FP) * (FP + TN) + (TP + FN) * (FN + TN)
-    kappa     = kappa_num / kappa_den if kappa_den > 0 else 0.0
-
-    return {'TP': TP, 'TN': TN, 'FP': FP, 'FN': FN,
-            'recall': recall, 'precision': precision,
-            'f1': f1, 'kappa': kappa,
-            'umbral_optimo': umbral_optimo}
+    m = calcular_metricas_umbral(scores, true_labels, umbral_optimo)
+    m['umbral_optimo'] = umbral_optimo
+    return m
 
 
 
@@ -206,12 +225,12 @@ def plot_tabla_umbrales(scores, true_labels, save_dir=None, umbral_actual=None):
     # ── Tabla por consola ─────────────────────────────────────────────────────
     umbrales_tabla = [0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45,
                       0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80]
-    sep = "=" * 75
+    sep = "=" * 72
     print(f"\n{sep}")
     print(f"  TABLA DE UMBRALES — SOBRE DATOS DE INFERENCIA")
     print(f"{sep}")
     print(f"  {'Umbral':>7}  {'TP':>4}  {'TN':>4}  {'FP':>4}  {'FN':>4}  "
-          f"{'Recall':>8}  {'Precision':>10}  {'F1':>7}")
+          f"{'Recall':>8}  {'Precision':>10}  {'F1':>8}")
     print(f"  {'─'*68}")
     for u in umbrales_tabla:
         preds = (scores >= u).astype(int)
@@ -219,12 +238,12 @@ def plot_tabla_umbrales(scores, true_labels, save_dir=None, umbral_actual=None):
         TN = int(((preds == 0) & (true_labels == 0)).sum())
         FP = int(((preds == 1) & (true_labels == 0)).sum())
         FN = int(((preds == 0) & (true_labels == 1)).sum())
-        rec  = 100 * TP / (TP + FN) if (TP + FN) > 0 else 0.0
-        prec = 100 * TP / (TP + FP) if (TP + FP) > 0 else 0.0
+        rec  = TP / (TP + FN) if (TP + FN) > 0 else 0.0
+        prec = TP / (TP + FP) if (TP + FP) > 0 else 0.0
         f1   = (2 * prec * rec / (prec + rec)) if (prec + rec) > 0 else 0.0
         marca = " ←" if umbral_actual is not None and abs(u - umbral_actual) < 0.026 else ""
         print(f"  {u:>7.2f}  {TP:>4}  {TN:>4}  {FP:>4}  {FN:>4}  "
-              f"{rec:>7.1f}%  {prec:>9.1f}%  {f1:>6.1f}%{marca}")
+              f"{rec:>8.4f}  {prec:>10.4f}  {f1:>8.4f}{marca}")
     print(f"{sep}\n")
 
     # ── Curva umbral sobre datos de inferencia ────────────────────────────────
@@ -278,15 +297,14 @@ def evaluate_results(results, true_labels, save_dir=None, umbral_actual=None):
         save_dir    (str | None):   Directorio donde guardar las figuras.
 
     Returns:
-        dict: 'auc', 'avg_precision', 'recall', 'precision', 'f1', 'kappa'.
+        dict: 'auc', 'pr_auc', 'recall', 'precision', 'f1', 'kappa'.
     """
     import os
     import matplotlib
     matplotlib.use('Agg')
 
     from sklearn.metrics import (roc_curve, auc as sk_auc,
-                                  precision_recall_curve,
-                                  average_precision_score)
+                                  precision_recall_curve)
 
     scores      = np.array([r['probabilities'][1] for r in results])
     true_labels = np.array(true_labels)
@@ -295,25 +313,43 @@ def evaluate_results(results, true_labels, save_dir=None, umbral_actual=None):
     fpr, tpr, _            = roc_curve(true_labels, scores)
     roc_auc                = sk_auc(fpr, tpr)
     precisions, recalls, _ = precision_recall_curve(true_labels, scores)
-    avg_precision          = average_precision_score(true_labels, scores)
+    pr_auc                 = sk_auc(recalls, precisions)   # igual que en entrenamiento
 
     # ── Métricas al umbral óptimo ─────────────────────────────────────────────
     m = calcular_metricas(scores, true_labels)
 
+    # ── Métricas al umbral del modelo (el cargado del .txt) ──────────────────
+    u_modelo = umbral_actual if umbral_actual is not None else 0.5
+    m_modelo = calcular_metricas_umbral(scores, true_labels, u_modelo)
+
     # ── Consola ───────────────────────────────────────────────────────────────
     sep = "=" * 52
+    # Bloque 1: umbral del modelo (lo que realmente clasificó la red)
     print(f"\n{sep}")
-    print(f"  RESULTADOS DE EVALUACIÓN")
+    print(f"  MÉTRICAS — UMBRAL DEL MODELO ({u_modelo:.4f})")
+    print(f"  (son las métricas reales de lo que clasificó la red)")
     print(f"{sep}")
-    print(f"  Umbral óptimo (max F1) : {m['umbral_optimo']:.4f}")
+    print(f"  TP={m_modelo['TP']}  TN={m_modelo['TN']}  FP={m_modelo['FP']}  FN={m_modelo['FN']}")
+    print(f"  {'─'*46}")
+    print(f"  Recall         : {m_modelo['recall']:.4f}")
+    print(f"  Precision      : {m_modelo['precision']:.4f}")
+    print(f"  F1 score       : {m_modelo['f1']:.4f}")
+    print(f"  Cohen's Kappa  : {m_modelo['kappa']:.4f}")
+    print(f"  AUC-ROC        : {roc_auc:.4f}")
+    print(f"  AUC-PR         : {pr_auc:.4f}  (área bajo curva PR)")
+    print(f"{sep}")
+
+    # Bloque 2: umbral óptimo F1 (referencia)
+    print(f"\n{sep}")
+    print(f"  MÉTRICAS — UMBRAL ÓPTIMO F1 ({m['umbral_optimo']:.4f})")
+    print(f"  (referencia: qué métricas se obtendrían con este umbral)")
+    print(f"{sep}")
     print(f"  TP={m['TP']}  TN={m['TN']}  FP={m['FP']}  FN={m['FN']}")
     print(f"  {'─'*46}")
-    print(f"  Recall         : {m['recall']:6.2f} %")
-    print(f"  Precision      : {m['precision']:6.2f} %")
-    print(f"  F1 score       : {m['f1']:6.2f} %")
-    print(f"  Cohen's Kappa  : {m['kappa']:6.4f}")
-    print(f"  AUC-ROC        : {roc_auc:6.4f}")
-    print(f"  Avg. Precision : {avg_precision:6.4f}  (área bajo curva PR)")
+    print(f"  Recall         : {m['recall']:.4f}")
+    print(f"  Precision      : {m['precision']:.4f}")
+    print(f"  F1 score       : {m['f1']:.4f}")
+    print(f"  Cohen's Kappa  : {m['kappa']:.4f}")
     print(f"{sep}\n")
 
     # ── Rutas de guardado ─────────────────────────────────────────────────────
@@ -334,7 +370,7 @@ def evaluate_results(results, true_labels, save_dir=None, umbral_actual=None):
     ax_roc.set_xlabel('Tasa de Falsos Positivos (FPR)', fontsize=12)
     ax_roc.set_ylabel('Tasa de Verdaderos Positivos (TPR / Recall)', fontsize=12)
     ax_roc.set_title('Curva ROC — Evaluación del clasificador\n'
-                     'Clasificador Borde / No borde', fontsize=13)
+                     'Clasificador Borde / Interior', fontsize=13)
     ax_roc.legend(loc='lower right', fontsize=11)
     ax_roc.grid(True, alpha=0.3)
     fig_roc.tight_layout()
@@ -345,7 +381,7 @@ def evaluate_results(results, true_labels, save_dir=None, umbral_actual=None):
     # ── Curva PR ──────────────────────────────────────────────────────────────
     fig_pr, ax_pr = plt.subplots(figsize=(7, 6))
     ax_pr.plot(recalls, precisions, color='darkorange', lw=2,
-               label=f'Curva PR  (AP = {avg_precision:.3f})')
+               label=f'Curva PR  (AUC-PR = {pr_auc:.3f})')
     baseline = true_labels.mean()
     ax_pr.axhline(y=baseline, color='gray', lw=1.2, linestyle='--',
                   label=f'Clasificador aleatorio (P = {baseline:.2f})')
@@ -353,7 +389,7 @@ def evaluate_results(results, true_labels, save_dir=None, umbral_actual=None):
     ax_pr.set_xlabel('Recall (Sensibilidad)', fontsize=12)
     ax_pr.set_ylabel('Precision', fontsize=12)
     ax_pr.set_title('Curva PR — Evaluación del clasificador\n'
-                    'Clasificador Borde / No borde', fontsize=13)
+                    'Clasificador Borde / Interior', fontsize=13)
     ax_pr.legend(loc='upper right', fontsize=11)
     ax_pr.grid(True, alpha=0.3)
     fig_pr.tight_layout()
@@ -365,7 +401,7 @@ def evaluate_results(results, true_labels, save_dir=None, umbral_actual=None):
     plot_tabla_umbrales(scores, true_labels,
                         save_dir=save_dir, umbral_actual=umbral_actual)
 
-    return {'auc': roc_auc, 'avg_precision': avg_precision,
+    return {'auc': roc_auc, 'pr_auc': pr_auc,
             'recall': m['recall'], 'precision': m['precision'],
             'f1': m['f1'], 'kappa': m['kappa']}
 
@@ -383,9 +419,9 @@ def save_results_to_csv(csv_path, results_per_csv, aisladas_mask=None,
     de la red junto con las probabilidades individuales de cada clase.
 
     Columnas añadidas:
-      - clasificacion    : 'Borde', 'No borde' o 'Aislada'
-      - prob_no_borde    : probabilidad de clase No borde [0,1]
-      - prob_borde       : probabilidad de clase Borde [0,1]
+      - clasificacion    : 'Borde', 'Interior' o 'Aislada'
+      - prob_borde       : probabilidad de clase Borde [0,1]   (índice 0)
+      - prob_interior    : probabilidad de clase Interior [0,1] (índice 1)
       - dist_verde_px    : distancia al verde (solo modo inferencia)
       - n_vecinas        : nº vecinas en radio (solo modo inferencia)
 
@@ -405,24 +441,24 @@ def save_results_to_csv(csv_path, results_per_csv, aisladas_mask=None,
     df = pd.read_csv(csv_path, encoding='utf-8-sig')
 
     clasificacion  = []
-    prob_no_borde  = []
     prob_borde     = []
+    prob_interior  = []
     result_iter    = iter(results_per_csv)
 
     for i in range(len(df)):
         if aisladas_mask is not None and aisladas_mask[i]:
             clasificacion.append('Aislada')
-            prob_no_borde.append(np.nan)   # aisladas no pasan por la red
-            prob_borde.append(np.nan)
+            prob_borde.append(np.nan)     # aisladas no pasan por la red
+            prob_interior.append(np.nan)
         else:
             r = next(result_iter)
             clasificacion.append(r['class_name'])
-            prob_no_borde.append(round(float(r['probabilities'][0]), 4))
-            prob_borde.append(round(float(r['probabilities'][1]), 4))
+            prob_borde.append(round(float(r['probabilities'][0]), 4))
+            prob_interior.append(round(float(r['probabilities'][1]), 4))
 
     df['clasificacion'] = clasificacion
-    df['prob_no_borde'] = prob_no_borde
     df['prob_borde']    = prob_borde
+    df['prob_interior'] = prob_interior
 
     if d2v is not None:
         df['dist_verde_px'] = np.round(d2v, 2)
@@ -449,10 +485,10 @@ def save_results_to_csv(csv_path, results_per_csv, aisladas_mask=None,
         col_x = cols.get('x', 'x')
 
         for i, row in df.iterrows():
-            p_nb = f"{row['prob_no_borde']:.4f}" if not pd.isna(row['prob_no_borde']) else "  —   "
             p_b  = f"{row['prob_borde']:.4f}"    if not pd.isna(row['prob_borde'])    else "  —   "
+            p_i  = f"{row['prob_interior']:.4f}" if not pd.isna(row['prob_interior']) else "  —   "
             lf.write(f"{i+1:>5}  {row[col_y]:>7}  {row[col_x]:>7}  "
-                     f"{row['clasificacion']:>13}  {p_b:>11}  {p_nb:>9}\n")
+                     f"{row['clasificacion']:>13}  {p_b:>11}  {p_i:>9}\n")
 
         lf.write(f"{'─'*70}\n")
         n_borde   = (df['clasificacion'] == 'Borde').sum()
@@ -494,7 +530,7 @@ def classify_from_csv(model_path, tif_path, csv_path, patch_size=64,
           en cada imagen y en total.
 
     En ambos casos el CSV de salida incluye la columna 'clasificacion' con el
-    resultado ('No borde', 'Borde' o 'Aislada') para cada partícula, además
+    resultado ('Borde', 'Interior' o 'Aislada') para cada partícula, además
     de columnas auxiliares 'dist_verde_px' y 'n_vecinas'.
 
     Args:
@@ -525,16 +561,19 @@ def classify_from_csv(model_path, tif_path, csv_path, patch_size=64,
             "debe coincidir."
         )
 
-    # ── Determinar modo según si todos los CSVs tienen etiquetas ─────────────
-    all_positions_orig = []  # posiciones de TODAS las partículas (inc. aisladas)
+    # ── Leer todos los CSVs: posiciones directamente del DataFrame ───────────
+    # Se lee el DataFrame directamente (no load_labels_csv) para garantizar
+    # que el orden (y, x) es idéntico al de evaluar_test y _generar_csvs_test.
+    all_positions_orig = []  # posiciones (y, x) de TODAS las partículas (inc. aisladas)
     all_clases_raw     = []  # etiquetas texto originales (o None)
     has_labels         = []
 
     for csv in csv_path:
-        pos, labels = load_labels_csv(csv)
-        # Leer también clases_raw para saber cuáles son 'aislada'
         df_tmp = pd.read_csv(csv, encoding='utf-8-sig')
         df_tmp.columns = [c.strip().lower() for c in df_tmp.columns]
+        if 'y' not in df_tmp.columns or 'x' not in df_tmp.columns:
+            raise ValueError(f"El CSV '{csv}' no tiene columnas 'y' y/o 'x'.")
+        pos = list(zip(df_tmp['y'].astype(float), df_tmp['x'].astype(float)))
         clases_raw = (list(df_tmp['clase'].str.strip().str.lower())
                       if 'clase' in df_tmp.columns else None)
         all_positions_orig.append(pos)
@@ -594,7 +633,8 @@ def classify_from_csv(model_path, tif_path, csv_path, patch_size=64,
 
         # Etiquetas reales de las no-aisladas (solo en modo evaluación)
         if evaluation_mode:
-            from funciones_auxiliares import CLASS_MAP
+            # Mismo mapeo que evaluar_test en entrenamiento.py
+            CLASS_MAP = {'borde': 0, 'interior': 1, 'exterior': 1}
             true_lbl_no_aisl = [CLASS_MAP[c] for c, m in zip(clases_raw, mask_aisladas)
                                  if not m]
             all_true_labels.extend(true_lbl_no_aisl)
@@ -648,7 +688,7 @@ def classify_from_csv(model_path, tif_path, csv_path, patch_size=64,
         print(f"\nModo evaluación: {len(all_results_red)} partículas "
               f"clasificadas por la red (aisladas excluidas previamente).")
         # Pasar el umbral cargado del .txt para marcarlo en la curva y la tabla
-        umbral_cargado = getattr(classify_from_csv, "_ultimo_umbral", None)
+        umbral_cargado = getattr(classify_from_tif, "_ultimo_umbral", None)
         evaluate_results(all_results_red, all_true_labels,
                          save_dir=save_dir, umbral_actual=umbral_cargado)
     else:

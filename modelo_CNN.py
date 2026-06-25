@@ -136,27 +136,27 @@ class MitochondriaContextCNN(nn.Module):
         # ── Rama A: 3 bloques con kernel 3×3 ─────────────────────────────────
         # Misma estructura que la red lineal que mejor funcionó.
         # Los 3 MaxPool reducen 64×64 → 32×32 → 16×16 → 8×8.
-        self.ra_conv1 = nn.Conv2d(num_channels, 16, kernel_size=3, padding=1)
-        self.ra_bn1   = nn.BatchNorm2d(16)
+        self.ra_conv1 = nn.Conv2d(num_channels, 8, kernel_size=3, padding=1)
+        self.ra_bn1   = nn.BatchNorm2d(8)
 
-        self.ra_conv2 = nn.Conv2d(16, 32, kernel_size=3, padding=1)
-        self.ra_bn2   = nn.BatchNorm2d(32)
+        self.ra_conv2 = nn.Conv2d(8, 16, kernel_size=3, padding=1)
+        self.ra_bn2   = nn.BatchNorm2d(16)
 
-        self.ra_conv3 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.ra_bn3   = nn.BatchNorm2d(64)
+        self.ra_conv3 = nn.Conv2d(16, 32, kernel_size=3, padding=1)
+        self.ra_bn3   = nn.BatchNorm2d(32)
 
         # ── Rama B: 3 bloques con kernel 5×5 ─────────────────────────────────
         # padding=2 en el 5×5 mantiene el mismo tamaño espacial que el 3×3
         # con padding=1 → ambas ramas producen mapas (N, 64, 8, 8) y se
         # pueden concatenar directamente sin redimensionado.
-        self.rb_conv1 = nn.Conv2d(num_channels, 16, kernel_size=5, padding=2)
-        self.rb_bn1   = nn.BatchNorm2d(16)
+        self.rb_conv1 = nn.Conv2d(num_channels, 8, kernel_size=5, padding=2)
+        self.rb_bn1   = nn.BatchNorm2d(8)
 
-        self.rb_conv2 = nn.Conv2d(16, 32, kernel_size=5, padding=2)
-        self.rb_bn2   = nn.BatchNorm2d(32)
+        self.rb_conv2 = nn.Conv2d(8, 16, kernel_size=5, padding=2)
+        self.rb_bn2   = nn.BatchNorm2d(16)
 
-        self.rb_conv3 = nn.Conv2d(32, 64, kernel_size=5, padding=2)
-        self.rb_bn3   = nn.BatchNorm2d(64)
+        #self.rb_conv3 = nn.Conv2d(16, 32, kernel_size=5, padding=2)
+        #self.rb_bn3   = nn.BatchNorm2d(32)
 
         # Pool compartido entre ambas ramas (mismo stride y kernel)
         self.pool = nn.MaxPool2d(2, 2)
@@ -174,9 +174,9 @@ class MitochondriaContextCNN(nn.Module):
         #   el aprendizaje de la decisión final. No se pone antes de fc1
         #   para no descartar aleatoriamente filtros de las ramas.
         # fc2: proyección final 64 → 2 (logits Borde / No borde).
-        self.fc1     = nn.Linear(128, 64)
-        self.dropout = nn.Dropout(0.35)
-        self.fc2     = nn.Linear(64, num_classes)
+        self.fc1     = nn.Linear(32, 16)
+        self.dropout = nn.Dropout(0.5)
+        self.fc2     = nn.Linear(16, num_classes)
 
     def forward(self, x):
         '''
@@ -189,12 +189,12 @@ class MitochondriaContextCNN(nn.Module):
         # ── Rama A: 3×3 ───────────────────────────────────────────────────────
         ra = self.pool(F.relu(self.ra_bn1(self.ra_conv1(x))))  # (N, 16, 32, 32)
         ra = self.pool(F.relu(self.ra_bn2(self.ra_conv2(ra)))) # (N, 32, 16, 16)
-        ra = self.pool(F.relu(self.ra_bn3(self.ra_conv3(ra)))) # (N, 64,  8,  8)
+        #ra = self.pool(F.relu(self.ra_bn3(self.ra_conv3(ra)))) # (N, 64,  8,  8)
 
         # ── Rama B: 5×5 ───────────────────────────────────────────────────────
         rb = self.pool(F.relu(self.rb_bn1(self.rb_conv1(x))))  # (N, 16, 32, 32)
         rb = self.pool(F.relu(self.rb_bn2(self.rb_conv2(rb)))) # (N, 32, 16, 16)
-        rb = self.pool(F.relu(self.rb_bn3(self.rb_conv3(rb)))) # (N, 64,  8,  8)
+        #rb = self.pool(F.relu(self.rb_bn3(self.rb_conv3(rb)))) # (N, 64,  8,  8)
 
         # ── Concatenación ─────────────────────────────────────────────────────
         x = torch.cat([ra, rb], dim=1)                         # (N, 128, 8, 8)

@@ -84,8 +84,8 @@ def calcular_metricas(val_scores, val_labels):
     FP = int(((preds == 1) & (val_labels == 0)).sum())
     FN = int(((preds == 0) & (val_labels == 1)).sum())
 
-    recall    = 100 * TP / (TP + FN) if (TP + FN) > 0 else 0.0
-    precision = 100 * TP / (TP + FP) if (TP + FP) > 0 else 0.0
+    recall    = TP / (TP + FN) if (TP + FN) > 0 else 0.0
+    precision = TP / (TP + FP) if (TP + FP) > 0 else 0.0
     f1        = (2 * precision * recall / (precision + recall)
                  if (precision + recall) > 0 else 0.0)
     kappa_num = 2 * (TP * TN - FN * FP)
@@ -102,7 +102,51 @@ def calcular_metricas(val_scores, val_labels):
     }
 
 
-def plot_curvas_evaluacion(val_scores, val_labels, save_dir=None, prefijo='val'):
+def calcular_metricas_con_umbral(scores, labels, umbral):
+    '''
+    Igual que calcular_metricas pero usando un umbral ya conocido en lugar de
+    buscar el óptimo. Se usa para el set de test: las métricas deben calcularse
+    con el umbral guardado durante el entrenamiento (el mismo que usa la red
+    para clasificar), no con el que maximiza F1 sobre los datos de test.
+
+    Args:
+        scores (array-like): Probabilidades de clase Interior.
+        labels (array-like): Etiquetas reales (0=Borde, 1=Interior).
+        umbral (float):      Umbral de decisión a aplicar.
+
+    Returns:
+        dict con claves: TP, TN, FP, FN, recall, precision, f1, kappa,
+                         umbral_optimo (igual al umbral pasado).
+    '''
+    scores = np.array(scores)
+    labels = np.array(labels)
+
+    preds = (scores >= umbral).astype(int)
+    TP = int(((preds == 1) & (labels == 1)).sum())
+    TN = int(((preds == 0) & (labels == 0)).sum())
+    FP = int(((preds == 1) & (labels == 0)).sum())
+    FN = int(((preds == 0) & (labels == 1)).sum())
+
+    recall    = TP / (TP + FN) if (TP + FN) > 0 else 0.0
+    precision = TP / (TP + FP) if (TP + FP) > 0 else 0.0
+    f1        = (2 * precision * recall / (precision + recall)
+                 if (precision + recall) > 0 else 0.0)
+    kappa_num = 2 * (TP * TN - FN * FP)
+    kappa_den = (TP + FP) * (FP + TN) + (TP + FN) * (FN + TN)
+    kappa     = kappa_num / kappa_den if kappa_den > 0 else 0.0
+
+    return {
+        'TP': TP, 'TN': TN, 'FP': FP, 'FN': FN,
+        'recall':        recall,
+        'precision':     precision,
+        'f1':            f1,
+        'kappa':         kappa,
+        'umbral_optimo': umbral,  # el umbral usado, no buscado
+    }
+
+
+def plot_curvas_evaluacion(val_scores, val_labels, save_dir=None, prefijo='val',
+                           umbral_externo=None):
     '''
     Calcula todas las métricas de evaluación del mejor modelo, las imprime
     por consola y las registra en el log. Genera dos figuras independientes:
@@ -116,9 +160,12 @@ def plot_curvas_evaluacion(val_scores, val_labels, save_dir=None, prefijo='val')
     Las métricas NO se muestran dentro de las gráficas — solo por consola y log.
 
     Args:
-        val_scores (list of float): Probabilidades de clase Interior (validación).
-        val_labels (list of int):   Etiquetas reales (0=Borde, 1=Interior).
-        save_dir   (str | None):    Directorio donde guardar las figuras.
+        val_scores     (list of float): Probabilidades de clase Interior (validación).
+        val_labels     (list of int):   Etiquetas reales (0=Borde, 1=Interior).
+        save_dir       (str | None):    Directorio donde guardar las figuras.
+        umbral_externo (float | None):  Si se indica, las métricas se calculan con
+                                        este umbral en lugar de buscar el óptimo.
+                                        Usar siempre para test (umbral del modelo).
 
     Returns:
         float: AUC-ROC (el criterio de guardado del modelo).
@@ -137,8 +184,13 @@ def plot_curvas_evaluacion(val_scores, val_labels, save_dir=None, prefijo='val')
     precisions, recalls, _ = precision_recall_curve(val_labels, val_scores)
     pr_auc                 = auc(recalls, precisions)
 
-    # ── Métricas al umbral óptimo (max F1) ───────────────────────────────────
-    m = calcular_metricas(val_scores, val_labels)
+    # ── Métricas ──────────────────────────────────────────────────────────────
+    # Test: usar el umbral del modelo guardado, NO buscar el óptimo sobre test
+    # Validación: buscar el umbral que maximiza F1 sobre validación
+    if umbral_externo is not None:
+        m = calcular_metricas_con_umbral(val_scores, val_labels, umbral_externo)
+    else:
+        m = calcular_metricas(val_scores, val_labels)
 
     # ── Consola ───────────────────────────────────────────────────────────────
     etiq = 'VALIDACIÓN — MEJOR MODELO' if prefijo == 'val' else 'TEST'
@@ -146,28 +198,30 @@ def plot_curvas_evaluacion(val_scores, val_labels, save_dir=None, prefijo='val')
     print(f"\n{sep}")
     print(f"  MÉTRICAS DE {etiq}")
     print(f"{sep}")
-    print(f"  Umbral óptimo (max F1) : {m['umbral_optimo']:.4f}")
-    print(f"  Umbral óptimo (max F1) : {m['umbral_optimo']:.4f}")
+    etiq_umbral = 'Umbral del modelo     ' if umbral_externo is not None else 'Umbral óptimo (max F1)'
+    print(f"  {etiq_umbral} : {m['umbral_optimo']:.4f}")
     print(f"  TP={m['TP']}  TN={m['TN']}  FP={m['FP']}  FN={m['FN']}")
     print(f"  {'─'*46}")
-    print(f"  Recall         : {m['recall']:6.2f} %")
-    print(f"  Precision      : {m['precision']:6.2f} %")
-    print(f"  F1 score       : {m['f1']:6.2f} %")
-    print(f"  Cohen's Kappa  : {m['kappa']:6.4f}")
-    print(f"  AUC-ROC        : {roc_auc:6.4f}")
-    print(f"  AUC-PR : {pr_auc:6.4f}")
+    print(f"  Recall         : {m['recall']:.4f}")
+    print(f"  Precision      : {m['precision']:.4f}")
+    print(f"  F1 score       : {m['f1']:.4f}")
+    print(f"  Cohen's Kappa  : {m['kappa']:.4f}")
+    print(f"  AUC-ROC        : {roc_auc:.4f}")
+    print(f"  AUC-PR         : {pr_auc:.4f}")
     print(f"{sep}\n")
 
     # ── Log ───────────────────────────────────────────────────────────────────
     logger.info(f"── Métricas {etiq} ──")
     logger.info(f"  AUC-ROC        : {roc_auc:.4f}  (criterio de guardado)")
-    logger.info(f"  Umbral opt.    : {m['umbral_optimo']:.4f}  (maximiza F1)")
+    etiq_umbral_log = 'Umbral modelo' if umbral_externo is not None else 'Umbral opt.'
+    logger.info(f"  {etiq_umbral_log}    : {m['umbral_optimo']:.4f}  "
+                f"({'del modelo guardado' if umbral_externo is not None else 'maximiza F1'})")
     logger.info(f"  TP={m['TP']}  TN={m['TN']}  FP={m['FP']}  FN={m['FN']}")
-    logger.info(f"  Recall         : {m['recall']:.2f} %")
-    logger.info(f"  Precision      : {m['precision']:.2f} %")
-    logger.info(f"  F1 score       : {m['f1']:.2f} %")
+    logger.info(f"  Recall         : {m['recall']:.4f}")
+    logger.info(f"  Precision      : {m['precision']:.4f}")
+    logger.info(f"  F1 score       : {m['f1']:.4f}")
     logger.info(f"  Cohen's Kappa  : {m['kappa']:.4f}")
-    logger.info(f"  AUC-PR : {pr_auc:.4f}")
+    logger.info(f"  AUC-PR         : {pr_auc:.4f}")
 
     # ── Rutas de guardado ─────────────────────────────────────────────────────
     if save_dir:
@@ -236,8 +290,8 @@ def plot_curvas_evaluacion(val_scores, val_labels, save_dir=None, prefijo='val')
     ax_u.plot(thresholds_th, f1_th,   color='seagreen',    lw=2, label='F1')
     ax_u.axvline(m['umbral_optimo'], color='gray', linestyle='--', alpha=0.8,
                  label=f'Umbral óptimo F1 = {m["umbral_optimo"]:.3f}')
-    ax_u.axhline(m['recall'] / 100,    color='steelblue',  linestyle=':', alpha=0.5)
-    ax_u.axhline(m['precision'] / 100, color='darkorange', linestyle=':', alpha=0.5)
+    ax_u.axhline(m['recall'],    color='steelblue',  linestyle=':', alpha=0.5)
+    ax_u.axhline(m['precision'], color='darkorange', linestyle=':', alpha=0.5)
     ax_u.set_xlim([0.0, 1.0]); ax_u.set_ylim([0.0, 1.05])
     ax_u.set_xlabel('Umbral de decisión (prob. Interior)', fontsize=12)
     ax_u.set_ylabel('Valor de la métrica', fontsize=12)
@@ -403,7 +457,7 @@ def guardar_datos_excel(train_losses, val_losses,
                          best_val_scores, best_val_labels,
                          train_accs=None, val_accs=None,
                          test_scores=None, test_labels=None,
-                         save_dir=None):
+                         save_dir=None, model_path=None):
     """
     Guarda dos archivos con todos los datos de las curvas del entrenamiento.
     Puede llamarse dos veces: primero sin test (al acabar el entrenamiento)
@@ -490,23 +544,25 @@ def guardar_datos_excel(train_losses, val_losses,
 
         # Hoja 4: ROC por epoch — pares FPR/TPR + mejor al final
         if historial_curvas:
-            df_roc = pd.DataFrame()
+            cols_roc = {}
             for h in historial_curvas:
-                df_roc[f"FPR_ep{h['epoch']}"] = pd.Series(h['fpr'])
-                df_roc[f"TPR_ep{h['epoch']}"] = pd.Series(h['tpr'])
-            df_roc['FPR_mejor'] = pd.Series(fpr_b)
-            df_roc['TPR_mejor'] = pd.Series(tpr_b)
-            df_roc.to_excel(writer, sheet_name='Curvas_ROC_por_epoch', index=False)
+                cols_roc[f"FPR_ep{h['epoch']}"] = pd.Series(h['fpr'])
+                cols_roc[f"TPR_ep{h['epoch']}"] = pd.Series(h['tpr'])
+            cols_roc['FPR_mejor'] = pd.Series(fpr_b)
+            cols_roc['TPR_mejor'] = pd.Series(tpr_b)
+            pd.concat(cols_roc, axis=1).to_excel(
+                writer, sheet_name='Curvas_ROC_por_epoch', index=False)
 
         # Hoja 5: PR por epoch — pares Recall/Precision + mejor al final
         if historial_curvas:
-            df_pr = pd.DataFrame()
+            cols_pr = {}
             for h in historial_curvas:
-                df_pr[f"Recall_ep{h['epoch']}"] = pd.Series(h['rec'])
-                df_pr[f"Prec_ep{h['epoch']}"]   = pd.Series(h['prec'])
-            df_pr['Recall_mejor'] = pd.Series(rec_b)
-            df_pr['Prec_mejor']   = pd.Series(prec_b)
-            df_pr.to_excel(writer, sheet_name='Curvas_PR_por_epoch', index=False)
+                cols_pr[f"Recall_ep{h['epoch']}"] = pd.Series(h['rec'])
+                cols_pr[f"Prec_ep{h['epoch']}"]   = pd.Series(h['prec'])
+            cols_pr['Recall_mejor'] = pd.Series(rec_b)
+            cols_pr['Prec_mejor']   = pd.Series(prec_b)
+            pd.concat(cols_pr, axis=1).to_excel(
+                writer, sheet_name='Curvas_PR_por_epoch', index=False)
 
         # Hoja 6: curva umbral validación — siempre presente
         pd.DataFrame({'Umbral': thresh_th, 'Recall': rec_th,
@@ -545,9 +601,9 @@ def guardar_datos_excel(train_losses, val_losses,
         'auc_pr':        round(pr_auc_mejor,  6),
         'umbral_optimo': round(m['umbral_optimo'], 6),
         'TP':            m['TP'], 'TN': m['TN'], 'FP': m['FP'], 'FN': m['FN'],
-        'recall_pct':    round(m['recall'],    4),
-        'precision_pct': round(m['precision'], 4),
-        'f1_pct':        round(m['f1'],        4),
+        'recall':        round(m['recall'],    6),
+        'precision':     round(m['precision'], 6),
+        'f1':            round(m['f1'],        6),
         'kappa':         round(m['kappa'],     6),
     })
 
@@ -557,7 +613,7 @@ def guardar_datos_excel(train_losses, val_losses,
             'tipo': 'checkpoint', 'epoch': h['epoch'],
             'auc_roc': round(h['roc_auc'], 6), 'auc_pr': round(h['pr_auc'], 6),
             'umbral_optimo': '', 'TP': '', 'TN': '', 'FP': '', 'FN': '',
-            'recall_pct': '', 'precision_pct': '', 'f1_pct': '', 'kappa': '',
+            'recall': '', 'precision': '', 'f1': '', 'kappa': '',
         })
 
     # Fila de test con métricas completas — si se proporcionan
@@ -565,7 +621,21 @@ def guardar_datos_excel(train_losses, val_losses,
         ts = np.array(test_scores); tl = np.array(test_labels)
         fpr_t, tpr_t, _  = roc_curve(tl, ts)
         prec_t, rec_t, _ = precision_recall_curve(tl, ts)
-        m_test = calcular_metricas(ts, tl)
+        # Cargar umbral del modelo para calcular métricas de test con el mismo
+        # umbral que usó la red, no con el que maximiza F1 sobre el test
+        _umbral_test = None
+        if model_path is not None:
+            import os as _os
+            _umbral_path = model_path.replace('.pth', '_umbral_optimo.txt')
+            if _os.path.exists(_umbral_path):
+                with open(_umbral_path) as _f:
+                    _umbral_test = float(_f.read().strip())
+        if _umbral_test is not None:
+            m_test = calcular_metricas_con_umbral(ts, tl, _umbral_test)
+        else:
+            logger.warning("guardar_datos_excel: umbral del modelo no encontrado, "
+                           "usando umbral óptimo del test como fallback.")
+            m_test = calcular_metricas(ts, tl)
         filas_meta.append({
             'tipo':          'test',
             'epoch':         '',
@@ -574,9 +644,9 @@ def guardar_datos_excel(train_losses, val_losses,
             'umbral_optimo': round(m_test['umbral_optimo'], 6),
             'TP':            m_test['TP'], 'TN': m_test['TN'],
             'FP':            m_test['FP'], 'FN': m_test['FN'],
-            'recall_pct':    round(m_test['recall'],    4),
-            'precision_pct': round(m_test['precision'], 4),
-            'f1_pct':        round(m_test['f1'],        4),
+            'recall':        round(m_test['recall'],    6),
+            'precision':     round(m_test['precision'], 6),
+            'f1':            round(m_test['f1'],        6),
             'kappa':         round(m_test['kappa'],     6),
         })
 
@@ -650,6 +720,10 @@ def evaluar_test(model_path, tif_path, csv_path, patch_size=64,
     Los datos de test deben estar en CSVs con columna 'clase', igual que los de
     entrenamiento. Las partículas 'aislada' se excluyen automáticamente.
 
+    Usa el mismo camino de extracción de patches que _generar_csvs_test
+    (partícula a partícula con extract_patch_around_particle), garantizando que
+    los scores aquí calculados y los del CSV clasificado son idénticos.
+
     Args:
         model_path   (str):           Ruta al .pth del modelo entrenado.
         tif_path     (str|list[str]): Ruta/s al .tif de test.
@@ -662,6 +736,13 @@ def evaluar_test(model_path, tif_path, csv_path, patch_size=64,
         tuple: (test_scores, test_labels) — arrays numpy listos para el Excel.
     """
     import os
+    import pandas as pd
+    from funciones_auxiliares import load_tif_image, extract_patch_around_particle
+
+    if isinstance(tif_path, str):
+        tif_path = [tif_path]
+    if isinstance(csv_path, str):
+        csv_path = [csv_path]
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -681,22 +762,44 @@ def evaluar_test(model_path, tif_path, csv_path, patch_size=64,
         umbral = 0.5
         print(f"  [AVISO] Sin umbral guardado, usando 0.5 para test.")
 
-    # ── Construir dataset de test ─────────────────────────────────────────────
+    # ── Extraer scores partícula a partícula (igual que _generar_csvs_test) ───
+    # Mismo bucle que _generar_csvs_test para garantizar scores idénticos
     print(f"\n  Cargando datos de test...")
-    dataset_test = build_dataset_from_csv(tif_path, csv_path, patch_size)
-    test_loader  = DataLoader(dataset_test, batch_size=32, shuffle=False)
-
     test_scores = []
     test_labels = []
 
-    with torch.no_grad():
-        for patches, labels in test_loader:
-            patches = patches.to(device)
-            labels  = labels.squeeze(1).to(device)
-            outputs = model(patches)
-            probs   = torch.softmax(outputs, dim=1)[:, 1].cpu().numpy()
-            test_scores.extend(probs)
-            test_labels.extend(labels.cpu().numpy())
+    CLASS_MAP_TEST = {'borde': 0, 'interior': 1, 'exterior': 1}
+
+    for tif, csv in zip(tif_path, csv_path):
+        df = pd.read_csv(csv, encoding='utf-8-sig')
+        cols_lower = {c.strip().lower(): c for c in df.columns}
+        col_y     = cols_lower.get('y', 'y')
+        col_x     = cols_lower.get('x', 'x')
+        col_clase = cols_lower.get('clase', None)
+
+        if col_clase is None:
+            raise ValueError(f"El CSV de test '{csv}' no tiene columna 'clase'.")
+
+        clases_raw    = df[col_clase].str.strip().str.lower().tolist()
+        mask_aisladas = np.array([c == 'aislada' for c in clases_raw])
+
+        canal_rojo, canal_verde = load_tif_image(tif)
+
+        with torch.no_grad():
+            for i, row in df.iterrows():
+                if mask_aisladas[i]:
+                    continue  # aisladas excluidas
+                label = CLASS_MAP_TEST.get(clases_raw[i])
+                if label is None:
+                    continue  # etiqueta desconocida — saltar
+                pos   = (float(row[col_y]), float(row[col_x]))
+                patch = extract_patch_around_particle(
+                    canal_rojo, canal_verde, pos, patch_size)
+                patch_t = torch.FloatTensor(patch).unsqueeze(0).to(device)
+                output  = model(patch_t)
+                prob    = torch.softmax(output, dim=1)[0, 1].item()
+                test_scores.append(prob)
+                test_labels.append(label)
 
     test_scores = np.array(test_scores)
     test_labels = np.array(test_labels)
@@ -708,7 +811,8 @@ def evaluar_test(model_path, tif_path, csv_path, patch_size=64,
 
     # ── Curvas y métricas de test ─────────────────────────────────────────────
     plot_curvas_evaluacion(test_scores, test_labels,
-                           save_dir=save_dir, prefijo='test')
+                           save_dir=save_dir, prefijo='test',
+                           umbral_externo=umbral)
 
     # ── Intervalos de confianza bootstrap ─────────────────────────────────────
     print(f"\n  Calculando intervalos de confianza (bootstrap, {n_bootstrap} iter.)...")
@@ -727,7 +831,102 @@ def evaluar_test(model_path, tif_path, csv_path, patch_size=64,
                 f"AUC-PR: {ic['pr_auc_mean']:.4f} "
                 f"[{ic['pr_auc_lo']:.4f}, {ic['pr_auc_hi']:.4f}]")
 
+    # ── Generar CSV clasificado por archivo de test ───────────────────────────
+    _generar_csvs_test(tif_path, csv_path, model, patch_size,
+                       umbral, save_dir)
+
     return test_scores, test_labels
+
+
+def _generar_csvs_test(tif_path, csv_path, model, patch_size,
+                        umbral, save_dir):
+    """
+    Genera un CSV clasificado por cada archivo de test, equivalente al que
+    produce save_results_to_csv en clasificacion.py. Se guarda en save_dir
+    con el nombre <nombre_original>_clasificado_test.csv.
+
+    Columnas añadidas al CSV original:
+      - clasificacion  : 'Borde', 'Interior' o 'Aislada'
+      - prob_borde     : probabilidad de clase Borde [0,1]    (índice 0)
+      - prob_interior  : probabilidad de clase Interior [0,1] (índice 1)
+
+    Args:
+        tif_path   (str | list[str]): Ruta/s al .tif de test.
+        csv_path   (str | list[str]): Ruta/s al CSV de test (con columna 'clase').
+        model      (nn.Module):       Modelo ya cargado y en eval() desde evaluar_test.
+        patch_size (int):             Tamaño del recorte.
+        umbral     (float):           Umbral de decisión cargado del entrenamiento.
+        save_dir   (str | None):      Directorio de guardado.
+    """
+    import os
+    import pandas as pd
+
+    if isinstance(tif_path, str):
+        tif_path = [tif_path]
+    if isinstance(csv_path, str):
+        csv_path = [csv_path]
+
+    if save_dir is None:
+        save_dir = "resultados_entrenamiento"
+    os.makedirs(save_dir, exist_ok=True)
+
+    device = next(model.parameters()).device
+
+    CLASS_NAMES = ['Borde', 'Interior']
+
+    for tif, csv in zip(tif_path, csv_path):
+        # ── Leer CSV original ────────────────────────────────────────────────
+        df = pd.read_csv(csv, encoding='utf-8-sig')
+        cols_lower = {c.strip().lower(): c for c in df.columns}
+
+        col_y = cols_lower.get('y', 'y')
+        col_x = cols_lower.get('x', 'x')
+        col_clase = cols_lower.get('clase', None)
+
+        # ── Determinar máscara de aisladas ───────────────────────────────────
+        if col_clase is not None:
+            clases_raw = df[col_clase].str.strip().str.lower().tolist()
+            mask_aisladas = np.array([c == 'aislada' for c in clases_raw])
+        else:
+            mask_aisladas = np.zeros(len(df), dtype=bool)
+
+        # ── Cargar imagen y clasificar partículas no aisladas ─────────────────
+        from funciones_auxiliares import load_tif_image, extract_patch_around_particle
+        canal_rojo, canal_verde = load_tif_image(tif)
+
+        clasificacion = []
+        prob_borde    = []
+        prob_interior = []
+
+        with torch.no_grad():
+            for i, row in df.iterrows():
+                if mask_aisladas[i]:
+                    clasificacion.append('Aislada')
+                    prob_borde.append(np.nan)
+                    prob_interior.append(np.nan)
+                else:
+                    pos = (float(row[col_y]), float(row[col_x]))
+                    patch = extract_patch_around_particle(
+                        canal_rojo, canal_verde, pos, patch_size)
+                    patch_t = torch.FloatTensor(patch).unsqueeze(0).to(device)
+                    output = model(patch_t)
+                    probs = torch.softmax(output, dim=1).cpu().numpy()[0]
+                    pred  = 1 if probs[1] >= umbral else 0
+                    clasificacion.append(CLASS_NAMES[pred])
+                    prob_borde.append(round(float(probs[0]), 4))
+                    prob_interior.append(round(float(probs[1]), 4))
+
+        df['clasificacion'] = clasificacion
+        df['prob_borde']    = prob_borde
+        df['prob_interior'] = prob_interior
+
+        # ── Guardar en resultados_entrenamiento ──────────────────────────────
+        nombre_base = os.path.splitext(os.path.basename(csv))[0]
+        out_name    = f"{nombre_base}_clasificado_test.csv"
+        out_path    = os.path.join(save_dir, out_name)
+        df.to_csv(out_path, index=False)
+        print(f"  CSV clasificado test guardado en: {out_path}")
+        logger.info(f"CSV clasificado test guardado en: {out_path}")
 
 
 def train_model(model, train_loader, val_loader, num_epochs=50, lr=0.001,
@@ -941,9 +1140,8 @@ if __name__ == "__main__":
 
     train_loader, val_loader = prepare_loaders(TIF_PATH, CSV_PATH)
 
-    # ── Visualización opcional de batches ─────────────────────────────────────
-    # visualize_loader(train_loader, n_batches=2, save_dir="vis_batches")
-    visualize_loader(train_loader, n_patches=20, save_dir="vis_patches3/", save_tiff=False)
+    # ── Visualización opcional de patches ─────────────────────────────────────
+    #visualize_loader(train_loader, n_patches=20, save_dir="vis_patches3/", save_tiff=False)
 
     MODEL_PATH = 'best_mito_classifier.pth'
 
@@ -952,7 +1150,7 @@ if __name__ == "__main__":
      train_accs, val_accs,
      historial_curvas, best_epoch_num,
      best_val_scores, best_val_labels) = train_model(
-        model, train_loader, val_loader, num_epochs=70, lr=0.001,
+        model, train_loader, val_loader, num_epochs=300, lr=0.001,
         save_dir=SAVE_DIR, model_path=MODEL_PATH)
 
     # ── Modo test (descomentar cuando tengas el set de test listo) ────────
@@ -969,4 +1167,4 @@ if __name__ == "__main__":
          best_val_scores, best_val_labels,
          train_accs=train_accs, val_accs=val_accs,
          test_scores=test_scores, test_labels=test_labels,
-         save_dir=SAVE_DIR)
+         save_dir=SAVE_DIR, model_path=MODEL_PATH)
