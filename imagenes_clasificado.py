@@ -370,13 +370,13 @@ def main(imagen, csv, col_x, col_y, col_label, salida_png, salida_tif,
 if __name__ == "__main__":
 
     # ── Visualización (siempre activo) ────────────────────────────────────────
-    imagen      = "datos_clasificar/SUb_02_10_orig.tif"
-    csv         = "datos_clasificar/SUb_02_10_orig_clasificado.csv"
+    imagen      = "../datos/SUb_02_10_merged.tif"
+    csv         = "../resultados/resultados_EDT/SUb_02_10_clasificado_EDT.csv"
     col_x       = "X"
     col_y       = "Y"
     col_label   = "clasificacion"   # columna a visualizar en el PNG/TIFF
-    salida_png  = "resultado.png"
-    salida_tif  = "resultado_mascaras.tif"
+    salida_png  = "SUb_02_10_clasificado_EDT.png"
+    salida_tif  = "SUb_02_10_clasificado_EDT.tif"
     dpi         = 150
     radio_plot  = 6
     sigma       = 2
@@ -386,11 +386,11 @@ if __name__ == "__main__":
     # Poner a True para activar el cálculo de métricas
     calcular_metricas_flag = True
 
-    csv_gt          = "datos_clasificar/SUb_02_10_orig.csv"          # ground truth
+    csv_gt          = "../resultados/resultados_EDT/SUb_02_10_clasificado_EDT.csv"          # ground truth
     col_gt          = "Clase"                                         # columna GT
-    csv_pred        = "datos_clasificar/SUb_02_10_orig_clasificado.csv"  # predicciones
+    csv_pred        = "../resultados/resultados_EDT/SUb_02_10_clasificado_EDT.csv"  # predicciones
     col_pred        = "clasificacion"                                 # columna pred
-    salida_metricas = "metricas_clasificado.csv"
+    salida_metricas = "SUb_02_10_metricas_clasificado_EDT.csv"
     # ─────────────────────────────────────────────────────────────────────────
 
     main(

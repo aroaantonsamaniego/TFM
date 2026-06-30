@@ -1,0 +1,11 @@
+Metrica,Valor,Descripcion
+TP,20.0,Interior predicho como Interior
+FP,9.0,Borde predicho como Interior
+TN,91.0,Borde predicho como Borde
+FN,9.0,Interior predicho como Borde
+Recall (%),68.97,100 × TP / (TP + FN)
+Precision (%),68.97,100 × TP / (TP + FP)
+F1 (%),68.97,2 × Precision × Recall / (Precision + Recall)
+Kappa,0.5997,2*(TP*TN−FN*FP) / [(TP+FP)*(FP+TN)+(TP+FN)*(FN+TN)]
+Accuracy (%),86.05,100 × (TP + TN) / N
+N_evaluadas,129.0,Partículas Borde + Interior (sin Aisladas)
