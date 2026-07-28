@@ -1,10 +1,23 @@
-import torch
-from torch.utils.data import Dataset
 import numpy as np
 import tifffile
 import pandas as pd
-from scipy.spatial import cKDTree
 from scipy import ndimage as ndi
+from skimage.filters import threshold_otsu
+from skimage.segmentation import watershed
+
+# torch solo se necesita para el Dataset de entrenamiento (ParticleDataset).
+# Se importa de forma opcional para que este modulo comun pueda usarse tambien
+# desde el script clasico (clasificacion_EDT.py) sin PyTorch instalado.
+try:
+    import torch
+    from torch.utils.data import Dataset
+    _TORCH_DISPONIBLE = True
+except ImportError:
+    Dataset = object
+    _TORCH_DISPONIBLE = False
+
+# Elemento estructurante de conectividad para el cierre morfologico del rojo
+_ST = np.ones((3, 3), dtype=bool)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -46,15 +59,13 @@ def load_tif_image(tif_path):
 # Carga de CSV
 # ──────────────────────────────────────────────────────────────────────────────
 
-#CLASS_MAP = {'interior': 0, 'exterior': 0, 'aislada': 0, 'borde': 1}
-#cambiamos mapeo para ver que ocurre ahora
-CLASS_MAP = {'interior': 1, 'exterior': 1, 'aislada': 1, 'borde': 0}
+CLASS_MAP = {'interior': 1, 'aislada': 1, 'borde': 0}
 
 def load_labels_csv(csv_path):
     '''
-    Carga el CSV con coordenadas de partículas. Soporta dos formatos:
+    Carga el CSV con coordenadas de trayectorias. Soporta dos formatos:
     - Entrenamiento (3 columnas):  x, y, clase
-    - Clasificación (2 columnas):  x, y
+    - Clasificacion (2 columnas):  x, y
 
     Args:
         csv_path (str): Ruta al archivo .csv.
@@ -88,17 +99,17 @@ def load_labels_csv(csv_path):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Filtrado de partículas aisladas
+# Filtrado de trayectorias aisladas
 # ──────────────────────────────────────────────────────────────────────────────
 
 def filtrar_aisladas_etiquetadas(positions, labels, clases_raw):
     '''
-    Elimina del dataset las partículas etiquetadas como 'aislada'.
+    Elimina del dataset las trayectorias etiquetadas como 'aislada'.
     Se usa cuando el CSV tiene columna 'clase'.
 
     Args:
-        positions  (list of (y,x)): Coordenadas de todas las partículas.
-        labels     (list of int):   Etiquetas numéricas (0=borde, 1=interior).
+        positions  (list of (y,x)): Coordenadas de todas las trayectorias.
+        labels     (list of int):   Etiquetas numericas (0=borde, 1=interior).
         clases_raw (list of str):   Etiquetas de texto originales del CSV.
 
     Returns:
@@ -111,145 +122,134 @@ def filtrar_aisladas_etiquetadas(positions, labels, clases_raw):
     return pos_filtradas, lbl_filtradas, n_eliminadas
 
 
-def detectar_aisladas_EDT(canal_verde, positions,
-                                  radio_grafo=100, max_vecinas=3,
-                                  umbral_verde=0.01,
-                                  canal_rojo=None,
-                                  umbral_dist=2.0,
-                                  usar_conectividad=False,
-                                  umbral_rojo=None,
-                                  umbral_verde_bajo=None,
-                                  verde_sigma=0.0, verde_cierre=0,
-                                  verde_rellenar=False):
+def construir_territorios(canal_rojo, filas, cols, factor_rojo=0.25):
     '''
-    Detecta partículas aisladas mediante la Transformada de Distancia Euclídea
-    (EDT) aplicada al canal verde, replicando el criterio de detectar_aisladas.py.
-
-    Criterio (verdad de campo): una partícula es "aislada" si está FUERA de las
-    trazas verdes (ni en su interior ni en su borde). Procedimiento:
-
-      1. Mg  = canal_verde > t_g            (binarización del verde; Otsu si None).
-      2. D_g = distance_transform_edt(~Mg)  (distancia de CADA píxel a la traza
-                                             verde más cercana; el verde es el 0).
-      3. Para cada partícula (y, x) se lee d_g = D_g[y, x].
-      4. aislada ⟺ d_g > umbral_dist (θ). Si d_g ≤ θ → borde/interior (NO aislada).
-
-      (Opcional) Conectividad: si se pasa canal_rojo y usar_conectividad=True, una
-      partícula fuera de la banda θ se considera NO aislada cuando su isla roja
-      (rojo ∪ verde) toca una traza verde.
-
-    Mantiene el NOMBRE y el CONTRATO DE SALIDA de la versión anterior para que el
-    resto del código (clasificacion.py) no necesite ningún cambio. Los parámetros
-    radio_grafo y max_vecinas se aceptan solo por compatibilidad de llamada y NO
-    intervienen en el criterio EDT.
+    Construye un TERRITORIO por trayectoria mediante watershed del canal rojo
+    sembrado con los centroides anotados (un territorio por trayectoria, con la
+    etiqueta i+1). Portado verbatim de la Etapa 1 de clasificacion_EDT.py para
+    que el modulo de la CNN sea independiente de ese script.
 
     Args:
-        canal_verde  (np.ndarray): Canal verde normalizado (H, W).
-        positions    (list of (y,x)): Coordenadas de las partículas.
-        radio_grafo  (float): [IGNORADO] presente solo por compatibilidad.
-        max_vecinas  (int):   [IGNORADO] presente solo por compatibilidad.
-        umbral_verde (float|None): Umbral de binarización del verde. None -> Otsu.
-        canal_rojo   (np.ndarray|None): Canal rojo (solo si se usa conectividad).
-        umbral_dist  (float): Umbral de distancia θ en px. aislada ⟺ d_g > θ.
-        usar_conectividad (bool): Si True y canal_rojo no es None, comprueba si la
-                                  isla roja conecta con el verde.
-        umbral_rojo  (float|None): Umbral del rojo para conectividad. None -> Otsu.
-        umbral_verde_bajo (float|None): Umbral bajo de histéresis del verde.
-        verde_sigma  (float): Suavizado gaussiano del verde antes de umbralar.
-        verde_cierre (int):   Iteraciones de cierre morfológico de Mg.
-        verde_rellenar (bool): Rellenar huecos interiores de Mg.
+        canal_rojo  (np.ndarray): Canal rojo (H, W). Puede venir normalizado: el
+                                  umbral de Otsu escala igual que la imagen, asi
+                                  que la mascara resultante es identica a la del
+                                  canal crudo (transformacion monotona).
+        filas       (np.ndarray): Coordenada y (int) de cada centroide.
+        cols        (np.ndarray): Coordenada x (int) de cada centroide.
+        factor_rojo (float):      t_r = factor_rojo * Otsu(rojo>0) para el rojo.
 
     Returns:
-        tuple: (mask_aisladas, d2v, n_vecinas)
-               - mask_aisladas (np.ndarray bool): True = clasificada como aislada.
-               - d2v           (np.ndarray float): Distancia EDT al verde por partícula.
-               - n_vecinas     (None): el criterio EDT no calcula vecinas, por lo
-                                       que se devuelve None (la columna 'n_vecinas'
-                                       se omite automáticamente en el CSV de salida).
+        tuple: (lab, t_r) — lab es el mapa de territorios (int32, 0=fondo,
+               i+1=territorio de la trayectoria i); t_r el umbral usado.
     '''
-    # ── Umbral del verde (fijo o Otsu como respaldo) ──────────────────────────
-    def _umbral_auto(canal, umbral):
-        if umbral is not None:
-            return float(umbral)
-        try:
-            from skimage.filters import threshold_otsu
-            return float(threshold_otsu(canal))
-        except Exception:
-            return float(canal.mean())
+    nz  = canal_rojo[canal_rojo > 0]
+    t_r = float(threshold_otsu(nz)) * factor_rojo if nz.size else 0.0
+    Mr  = canal_rojo > t_r
+    Mr[filas, cols] = True
+    Mr  = ndi.binary_closing(Mr, structure=_ST)
+    sem = np.zeros(canal_rojo.shape, dtype=np.int32)
+    sem[filas, cols] = np.arange(1, len(filas) + 1)
+    lab = watershed(-ndi.distance_transform_edt(Mr), sem, mask=Mr)
+    return lab, t_r
 
-    img = (ndi.gaussian_filter(canal_verde, verde_sigma)
-           if (verde_sigma and verde_sigma > 0) else canal_verde)
 
-    t_g = _umbral_auto(img, umbral_verde)
+def detectar_aisladas_EDT(canal_verde, positions, canal_rojo,
+                          umbral_dist=0.0,
+                          umbral_verde=0.0,
+                          factor_rojo=0.25):
+    '''
+    Detecta trayectorias aisladas
+    Criterio (territorios watershed + d_min sobre el soporte del verde):
 
-    # ── Máscara binaria del verde Mg ──────────────────────────────────────────
-    if umbral_verde_bajo is not None:
-        try:
-            from skimage.filters import apply_hysteresis_threshold
-            Mg = apply_hysteresis_threshold(img, float(umbral_verde_bajo), t_g)
-        except Exception:
-            Mg = img > t_g
-    else:
-        Mg = img > t_g
+      1. M_g   = canal_verde > umbral_verde          (soporte del verde; el
+                                                      optimo empirico es t_g = 0,
+                                                      es decir M_g = {I_g > 0}).
+      2. D_out = distance_transform_edt(~M_g)         (distancia de cada pixel a
+                                                      la traza verde mas cercana).
+      3. Por cada trayectoria i se construye su territorio rojo R_i (watershed
+         del rojo sembrado con los centroides) y se toma
+             d_min(i) = min_{p in R_i} D_out(p).
+      4. aislada  <=>  d_min(i) > umbral_dist (theta). Optimo empirico theta = 0.
 
-    if verde_cierre and verde_cierre > 0:
-        Mg = ndi.binary_closing(Mg, iterations=int(verde_cierre))
-    if verde_rellenar:
-        Mg = ndi.binary_fill_holes(Mg)
+    Medir d_min sobre todo el territorio (no solo en el centroide) y usar la
+    mascara de soporte {I_g > 0} es lo que hace a este criterio la
+    version optima.
 
-    Mg = np.asarray(Mg, dtype=bool)
+    NOTA sobre la normalizacion: el criterio es invariante a la normalizacion
+    min-max de load_tif_image, porque el fondo verde es exactamente 0 (la
+    mascara {I_g > 0} no cambia), el umbral de Otsu del rojo escala igual que la
+    imagen (misma mascara) y las distancias son puramente geometricas (en px).
 
-    # ── Campo de distancia al verde (EDT): el verde es el 0 ───────────────────
-    D_g = ndi.distance_transform_edt(~Mg)
+    Args:
+        canal_verde  (np.ndarray):       Canal verde (H, W).
+        positions    (list of (y,x)):    Coordenadas de las trayectorias.
+        canal_rojo   (np.ndarray):       Canal rojo (H, W). Se usa para construir
+                                         los territorios watershed.
+        umbral_dist  (float):            Umbral theta (px). aislada <=> d_min > theta.
+        umbral_verde (float | None):     t_g del soporte del verde M_g={I_g>t_g}.
+                                         None se interpreta como 0.0 (=> {I_g>0}).
+        factor_rojo  (float):            t_r = factor_rojo * Otsu(rojo>0).
 
-    # ── Etiquetas de componentes (rojo ∪ verde) para la conectividad ──────────
-    usar_con = bool(usar_conectividad) and (canal_rojo is not None)
-    if usar_con:
-        t_r = _umbral_auto(canal_rojo, umbral_rojo)
-        Mr  = canal_rojo > t_r
-        labels, _        = ndi.label(Mr | Mg)
-        labels_con_verde = set(np.unique(labels[Mg]).tolist())
-        labels_con_verde.discard(0)
-    else:
-        labels           = None
-        labels_con_verde = set()
+    Returns:
+        tuple: (mask_aisladas, d_min, None)
+               - mask_aisladas (np.ndarray bool): True = aislada.
+               - d_min         (np.ndarray float): distancia minima al verde por
+                                                   trayectoria (columna
+                                                   'dist_verde_px' en el CSV).
+               - None: la Etapa 1 no calcula vecinas (la columna 'n_vecinas' se
+                       omite automaticamente en el CSV de salida).
+    '''
+    if canal_rojo is None:
+        raise ValueError(
+            "detectar_aisladas_EDT requiere 'canal_rojo' para construir los "
+            "territorios watershed de la Etapa 1."
+        )
 
-    # ── Decisión partícula a partícula ────────────────────────────────────────
+    if umbral_verde is None:
+        umbral_verde = 0.0        # soporte del verde M_g = {I_g > 0}
+
+    n    = len(positions)
     H, W = canal_verde.shape
-    n = len(positions)
-    mask_aisladas = np.zeros(n, dtype=bool)
-    d2v           = np.zeros(n, dtype=float)
+    filas = np.clip(np.array([int(p[0]) for p in positions]), 0, H - 1)
+    cols  = np.clip(np.array([int(p[1]) for p in positions]), 0, W - 1)
 
-    for i, (y, x) in enumerate(positions):
-        yy = min(max(int(round(float(y))), 0), H - 1)
-        xx = min(max(int(round(float(x))), 0), W - 1)
-        d  = float(D_g[yy, xx])
-        d2v[i] = d
+    # ── Mascara de soporte del verde y campo de distancia al verde ────────────
+    Mg1   = canal_verde > umbral_verde
+    D_out = (ndi.distance_transform_edt(~Mg1) if Mg1.any()
+             else np.full(canal_verde.shape, np.inf))
 
-        if d <= umbral_dist:
-            mask_aisladas[i] = False          # dentro de la banda θ → borde/interior
-            continue
+    # ── Territorios watershed (un territorio por trayectoria) ─────────────────
+    lab, _ = construir_territorios(canal_rojo, filas, cols, factor_rojo)
+    idx    = np.arange(1, n + 1)
+    area   = np.bincount(lab.ravel(), minlength=n + 1)[1:].astype(int)
 
-        if usar_con:
-            lbl        = labels[yy, xx]
-            toca_verde = (lbl != 0 and lbl in labels_con_verde)
-            mask_aisladas[i] = not toca_verde
-        else:
-            mask_aisladas[i] = True           # fuera de la banda de θ → aislada
+    # ── d_min: distancia minima al verde sobre todo el territorio ─────────────
+    if np.isinf(D_out).all():
+        d_min = np.full(n, np.inf)
+    else:
+        d_min = np.asarray(ndi.minimum(D_out, lab, index=idx), dtype=float)
 
-    return mask_aisladas, d2v, None
+    # Territorios vacios (sin pixeles asignados): se usa la distancia del propio
+    # centroide como respaldo, igual que en clasificar_edt.
+    vac = area == 0
+    if vac.any():
+        d_min[vac] = D_out[filas[vac], cols[vac]]
 
+    # ── Criterio de la Etapa 1 ────────────────────────────────────────────────
+    mask_aisladas = d_min > umbral_dist
+
+    return mask_aisladas, d_min, None
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Extracción de parches
+# Extraccion de parches
 # ──────────────────────────────────────────────────────────────────────────────
 
 def extract_patch_around_particle(canal_rojo, canal_verde, center_yx, patch_size=32):
     '''
-    Extrae un recorte cuadrado de ambos canales centrado en una partícula.
-    Usa padding 'reflect' siempre que el recorte tenga tamaño suficiente,
-    y cae back a 'constant' (ceros) cuando la partícula está en el borde
-    extremo de la imagen y el recorte quedaría vacío en alguna dimensión.
+    Extrae un recorte cuadrado de ambos canales centrado en una trayectoria.
+    Usa padding 'reflect' siempre que el recorte tenga tamanyo suficiente,
+    y cae back a 'constant' (ceros) cuando la trayectoria esta en el borde
+    extremo de la imagen y el recorte quedaria vacio en alguna dimension.
 
     Args:
         canal_rojo  (np.ndarray): Canal rojo (H, W), valores en [0,1].
@@ -316,12 +316,12 @@ class ParticleDataset(Dataset):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Construcción del dataset desde CSV
+# Construccion del dataset desde CSV
 # ──────────────────────────────────────────────────────────────────────────────
 
 def build_dataset_from_csv(tif_path, csv_path, patch_size=32):
     '''
-    Carga TIFFs y CSVs, filtra las partículas aisladas (etiquetadas como
+    Carga TIFFs y CSVs, filtra las trayectorias aisladas (etiquetadas como
     'aislada') y construye un ParticleDataset con el resto.
 
     Acepta rutas individuales (str) o listas de rutas (list).
@@ -376,7 +376,7 @@ def build_dataset_from_csv(tif_path, csv_path, patch_size=32):
         total_aisladas += n_aisladas
 
         if n_aisladas > 0:
-            print(f"    Eliminadas {n_aisladas} partículas aisladas (etiquetadas). "
+            print(f"    Eliminadas {n_aisladas} trayectorias aisladas (etiquetadas). "
                   f"Quedan {len(df_filtrado)}.")
 
         positions = list(zip(df_filtrado['y'].astype(float).astype(int),
@@ -392,7 +392,7 @@ def build_dataset_from_csv(tif_path, csv_path, patch_size=32):
     all_patches = np.stack(all_patches, axis=0)
     counts      = np.bincount(np.array(all_labels), minlength=2)
 
-    print(f"\nDataset construido: {len(all_labels)} partículas "
+    print(f"\nDataset construido: {len(all_labels)} trayectorias "
           f"({total_aisladas} aisladas eliminadas de {total_particulas} totales) | "
           f"Distribución: borde={counts[0]}, interior={counts[1]}")
 
@@ -400,7 +400,7 @@ def build_dataset_from_csv(tif_path, csv_path, patch_size=32):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Carga automática de pares desde directorio
+# Carga automatica de pares desde directorio
 # ──────────────────────────────────────────────────────────────────────────────
 
 def load_pairs_from_dir(directory, tif_ext=".tif", csv_ext=".csv"):
@@ -437,7 +437,7 @@ def load_pairs_from_dir(directory, tif_ext=".tif", csv_ext=".csv"):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Visualización de patches individuales
+# Visualizacion de patches individuales
 # ──────────────────────────────────────────────────────────────────────────────
 
 CLASS_NAMES_VIS = {0: 'Borde', 1: 'Interior'}
@@ -445,13 +445,13 @@ CLASS_NAMES_VIS = {0: 'Borde', 1: 'Interior'}
 
 def visualize_patch(patch, label, patch_idx=0, save_dir=None, save_tiff=True):
     '''
-    Visualiza un único parche con sus dos canales solapados (overlay RGB)
+    Visualiza un unico parche con sus dos canales solapados (overlay RGB)
     y opcionalmente lo guarda como figura PNG y/o TIFF de 2 canales para Fiji.
 
-    La visualización overlay mapea:
+    La visualizacion overlay mapea:
       - Canal rojo  (estáticas)  → rojo
       - Canal verde (elípticas)  → verde
-    ambos superpuestos en una imagen RGB para apreciar la colocalización.
+    ambos superpuestos en una imagen RGB para apreciar la colocalizacion.
 
     Los TIFF se guardan con forma (2, H, W) y dtype float32, listos para
     abrirse en Fiji con "Image > Color > Make Composite".
@@ -459,10 +459,10 @@ def visualize_patch(patch, label, patch_idx=0, save_dir=None, save_tiff=True):
     Args:
         patch     (np.ndarray): Parche de forma (2, H, W), valores en [0, 1].
         label     (int):        Etiqueta de clase (0=borde, 1=interior).
-        patch_idx (int):        Índice del parche (para nombres de archivo y título).
+        patch_idx (int):        Indice del parche (para nombres de archivo y titulo).
         save_dir  (str | None): Directorio donde guardar los archivos.
                                 None = no guardar nada.
-        save_tiff (bool):       Si True, guarda también un TIFF de 2 canales
+        save_tiff (bool):       Si True, guarda tambien un TIFF de 2 canales
                                 compatible con Fiji (default: True).
 
     Returns:
@@ -530,14 +530,14 @@ def visualize_loader(loader, n_patches=10, save_dir=None, save_tiff=True):
     generando una figura individual por parche.
 
     Itera sobre los batches y extrae parches uno a uno hasta alcanzar
-    el número solicitado.
+    el numero solicitado.
 
     Args:
-        loader    (DataLoader): DataLoader de entrenamiento o validación.
+        loader    (DataLoader): DataLoader de entrenamiento o validacion.
         n_patches (int):        Número total de parches a visualizar (default: 10).
         save_dir  (str | None): Directorio donde guardar figuras PNG y TIFFs.
                                 None = no guardar. Ej: "visualizacion_patches/".
-        save_tiff (bool):       Si True, guarda también TIFFs de 2 canales
+        save_tiff (bool):       Si True, guarda tambien TIFFs de 2 canales
                                 compatibles con Fiji (default: True).
     '''
     import matplotlib.pyplot as plt
@@ -564,4 +564,4 @@ def visualize_loader(loader, n_patches=10, save_dir=None, save_tiff=True):
             plt.close('all')
             count += 1
 
-    print(f"\nVisualización completada: {count} parches procesados.")
+    print(f"\nVisualizacion completada: {count} parches procesados.")

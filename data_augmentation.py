@@ -6,16 +6,16 @@ import pandas as pd
 import tifffile as tiff
 
 # =========================================================
-# CONFIGURACIÓN
+# CONFIGURACION
 # =========================================================
 
-# Carpeta con imágenes Y CSVs originales (mismo directorio)
-INPUT_DIR = "definitivos"
+# Carpeta con imagenes Y CSVs originales (mismo directorio)
+INPUT_DIR = "../datos/definitivos/training"
 
 # Carpeta de salida
-OUTPUT_DIR = "data_augmentation_clase"
+OUTPUT_DIR = "../datos/definitvos/data_augmentation"
 
-# Extensión de imágenes
+# Extension de imagenes
 IMAGE_EXT = ".tif"
 
 # Crear carpeta de salida
@@ -83,7 +83,7 @@ TRANSFORMS = {
 }
 
 # =========================================================
-# FUNCIÓN PRINCIPAL
+# FUNCION PRINCIPAL
 # =========================================================
 
 def process_sample(image_path, csv_path):
@@ -151,7 +151,7 @@ def process_sample(image_path, csv_path):
         out_img_name = f"{base_name}_{aug_name}.tif"
         out_img_path = Path(OUTPUT_DIR) / out_img_name
 
-        # Guardamos pasándole los metadatos originales para que recupere el RGB
+        # Guardamos pasandole los metadatos originales para que recupere el RGB
         tiff.imwrite(
             str(out_img_path), 
             new_image_to_save, 

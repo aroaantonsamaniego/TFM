@@ -1,42 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Anotador interactivo de trayectorias sobre imágenes TIFF multicanal.
-
-
--------------------------------------------
-  1. Al abrir la imagen, el programa DETECTA AUTOMÁTICAMENTE las trayectorias
-     estáticas en el canal rojo (canal 0, el mismo que usa load_tif_image),
-     las registra en el CSV y las marca sobre la imagen como puntos HUECOS
-     (sin clasificar).
-  2. El anotador solo tiene que ir clicando sobre cada punto y asignarle su
-     clase (Borde / Interior / Aislada). Al clasificarlo, el punto pasa de
-     HUECO a RELLENO con el color de la clase: así se ve de un vistazo qué
-     queda por anotar.
-
-Interacción
------------
-  - Clic IZQUIERDO sobre un punto: le asigna la clase activa (lo "rellena").
-                    En vacío (si PERMITIR_ANADIR): añade un punto manual
-                    (para corregir una estática que el detector se haya saltado).
-  - Clic DERECHO:   quita la etiqueta del punto (vuelve a "sin clasificar"),
-                    SIN borrar el punto.
-  - Teclas 1,2,3:   cambian la clase activa.
-  - Tecla 'd':      devuelve a "sin clasificar" el punto bajo el cursor (= clic der.).
-  - Tecla 'x'/Supr: borra el punto bajo el cursor (falsos positivos del detector).
-  - Tecla 'u':      deshacer la última acción.
-  - Tecla 's':      guardar CSV (X, Y, Clase).
-  - + / - :         radio de selección (para estáticas pegadas; usa también el zoom).
-
-Ejecútalo como SCRIPT (no como celda de notebook):
-
-    python anotador_particulas.py [imagen.tif] [salida.csv]
-
-Si no aparece ninguna ventana, te falta un backend interactivo de matplotlib
-(instala tkinter:  sudo apt install python3-tk   o bien  pip install PyQt5).
-La detección automática necesita scikit-image y scipy
-(pip install scikit-image scipy).
-"""
 import sys
 import argparse
 import copy
@@ -50,9 +11,9 @@ import matplotlib.colors as mcolors
 from matplotlib.widgets import RadioButtons, Button, Slider
 
 # =========================================================
-# CONFIGURACIÓN
+# CONFIGURACION
 # =========================================================
-IMAGE_PATH = "../datos/SUb_02_10_merged.tif"   # imagen a anotar
+IMAGE_PATH = "../datos/imagenes_nuevas/SUboligo_02_3.tif"   # imagen a anotar
 # CSV de salida (X, Y, Clase).
 #   - None  -> se DERIVA del nombre de la imagen (recomendado): cada imagen
 #              tiene su propio CSV y se retoma sola.
@@ -60,11 +21,12 @@ IMAGE_PATH = "../datos/SUb_02_10_merged.tif"   # imagen a anotar
 OUTPUT_CSV = None
 
 # Solo se usan cuando OUTPUT_CSV es None (CSV derivado por imagen):
-ANNOT_DIR = "anotaciones"        # carpeta donde guardar/buscar los CSV por imagen
-ANNOT_SUFFIX = "_anotaciones"    # imagen.tif -> anotaciones/imagen_anotaciones.csv
+ANNOT_DIR = "../datos/definitivos"        # carpeta donde guardar/buscar los CSV por imagen
+#ANNOT_SUFFIX = "_anotaciones"    # imagen.tif -> anotaciones/imagen_anotaciones.csv este archivo es el que retoma
+ANNOT_SUFFIX = ""
 
 # Si el CSV de ESA imagen ya existe, lo carga para RETOMAR donde lo dejaste
-# (incluyendo qué puntos siguen sin clasificar). Una imagen nueva se detecta
+# (incluyendo quE puntos siguen sin clasificar). Una imagen nueva se detecta
 # automáticamente desde cero.
 LOAD_EXISTING = True
 
@@ -73,16 +35,16 @@ LOAD_EXISTING = True
 # detectarlos. Déjalo en None para usar la detección automática.
 INPUT_POINTS_CSV = None
 
-# ── Detección automática de trayectorias estáticas (canal rojo, canal 0) ─────
+# ── Detección automática de trayectorias estaticas (canal rojo, canal 0) ─────
 DETECTAR_AUTOMATICO = True       # al abrir una imagen nueva, detecta y precarga
 METODO_DETECCION    = "maximos"  # "maximos" (picos locales) | "centroides" (blobs)
 DET_SIGMA           = 1.0        # suavizado gaussiano previo (px); 0 = sin suavizar
 DET_UMBRAL          = None       # None -> Otsu automático sobre el canal rojo
-DET_MIN_DISTANCIA   = 3          # ("maximos")   separación mínima entre picos (px)
+DET_MIN_DISTANCIA   = 3         # ("maximos")   separación mínima entre picos (px)
 DET_AREA_MIN        = 2          # ("centroides") área mínima de un blob (px)
 DET_AREA_MAX        = None       # ("centroides") área máxima (None = sin límite)
 
-# Permitir añadir puntos a mano (clic izq. en zona vacía). En False, un clic
+# Permitir anyadir puntos a mano (clic izq. en zona vacía). En False, un clic
 # fuera de un punto no hace nada: solo se pueden clasificar los detectados.
 PERMITIR_ANADIR = False
 
@@ -146,7 +108,7 @@ def to_display_rgb(image):
 
 
 # =========================================================
-# DETECCIÓN AUTOMÁTICA DE TRAYECTORIAS ESTÁTICAS (canal rojo)
+# DETECCION AUTOMATICA DE TRAYECTORIAS ESTATICAS
 # =========================================================
 def canal_estaticas(image):
     """Devuelve el canal de estáticas (canal 0) como 2D float [0, 1].
@@ -158,10 +120,10 @@ def canal_estaticas(image):
     if img.ndim == 2:
         ch = img
     else:
-        # channel-first -> channel-last si el primer eje es el más pequeño
+        # channel-first -> channel-last si el primer eje es el mas pequeño
         if img.ndim == 3 and img.shape[0] < img.shape[-1]:
             img = np.transpose(img, (1, 2, 0))
-        ch = img[..., 0]   # canal 0 = estáticas, igual que load_tif_image
+        ch = img[..., 0]   # canal 0 = estaticas, igual que load_tif_image
 
     ch = ch.astype(float)
     mn, mx = ch.min(), ch.max()
@@ -171,12 +133,12 @@ def canal_estaticas(image):
 def detectar_estaticas(canal, metodo=METODO_DETECCION, umbral=DET_UMBRAL,
                        sigma=DET_SIGMA, min_distancia=DET_MIN_DISTANCIA,
                        area_min=DET_AREA_MIN, area_max=DET_AREA_MAX):
-    """Localiza las trayectorias estáticas sobre el canal rojo normalizado.
+    """Localiza las trayectorias estaticas sobre el canal rojo normalizado.
 
     Args:
-        canal        (np.ndarray): Canal de estáticas (H, W) en [0, 1].
+        canal        (np.ndarray): Canal de estaticas (H, W) en [0, 1].
         metodo       (str): "maximos"   -> picos locales (skimage.peak_local_max).
-                                           Un punto por máximo; separa estáticas
+                                           Un punto por maximo; separa estaticas
                                            próximas con min_distancia.
                             "centroides" -> umbral + componentes conexas; un punto
                                            por blob (centroide), con filtro de área.
@@ -192,7 +154,7 @@ def detectar_estaticas(canal, metodo=METODO_DETECCION, umbral=DET_UMBRAL,
     try:
         from scipy import ndimage as ndi
     except Exception as e:
-        raise ImportError("La detección automática necesita scipy "
+        raise ImportError("La deteccion automatica necesita scipy "
                           "(pip install scipy).") from e
 
     suav = ndi.gaussian_filter(canal, sigma) if (sigma and sigma > 0) else canal
@@ -235,7 +197,7 @@ def detectar_estaticas(canal, metodo=METODO_DETECCION, umbral=DET_UMBRAL,
             r, c = reg.centroid                                  # (fila, columna)
             puntos.append((int(round(c)), int(round(r))))        # -> (x, y)
 
-    # Recortar a los límites de la imagen por seguridad
+    # Recortar a los limites de la imagen por seguridad
     h, w = canal.shape
     puntos = [(min(max(x, 0), w - 1), min(max(y, 0), h - 1)) for x, y in puntos]
     return puntos
@@ -243,7 +205,7 @@ def detectar_estaticas(canal, metodo=METODO_DETECCION, umbral=DET_UMBRAL,
 
 class Anotador:
     def __init__(self, image_path, output_csv):
-        # Archivo de sesión CANÓNICO: el que se autoguarda y se carga al retomar.
+        # Archivo de sesion caonico: el que se autoguarda y se carga al retomar.
         self.session_csv = Path(output_csv)
         self.session_csv.parent.mkdir(parents=True, exist_ok=True)
 
@@ -258,13 +220,13 @@ class Anotador:
         self.h, self.w = self.base_channels[0].shape
         self.disp = self._compose_rgb()
 
-        # Estado de anotación: lista de [x, y, clase]. clase = None -> sin clasificar.
+        # Estado de anotacion: lista de [x, y, clase]. clase = None -> sin clasificar.
         self.points = []
         self.history = []
         self.active_class = CLASSES[0]
         self.snap_radius = SNAP_RADIUS
 
-        # ── Precarga / detección ─────────────────────────────────────────────
+        # ── Precarga / deteccion ─────────────────────────────────────────────
         precargado = False
         if INPUT_POINTS_CSV and Path(INPUT_POINTS_CSV).exists():
             self._load_csv(Path(INPUT_POINTS_CSV))
@@ -291,7 +253,7 @@ class Anotador:
         self._build_ui()
         self._redraw()
 
-    # ---------- composición de la imagen / contraste ----------
+    # ---------- composicion de la imagen / contraste ----------
     def _prep_channels(self, image):
         """Normaliza cada canal a [0,1] y devuelve (bases, vectores_color)."""
         img = image
@@ -593,22 +555,72 @@ def derive_csv_path(image_path):
     return str(Path(ANNOT_DIR) / f"{stem}{ANNOT_SUFFIX}.csv")
 
 
+def pedir_imagen():
+    """Abre un diálogo gráfico para elegir la imagen TIFF a anotar.
+
+    Devuelve la ruta elegida (str) o None si se cancela o si Tkinter no está
+    disponible.
+    """
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        path = filedialog.askopenfilename(
+            title="Elige la imagen TIFF a anotar",
+            filetypes=[("Imágenes TIFF", "*.tif *.tiff"), ("Todos", "*.*")],
+        )
+        root.destroy()
+        return path or None
+    except Exception as e:
+        print(f"[AVISO] No se pudo abrir el selector de archivo: {e}")
+        return None
+
+
+def _mostrar_error(msg):
+    """Muestra un error por ventana (modo sin consola) y por consola si la hay."""
+    print(f"[ERROR] {msg}")
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        messagebox.showerror("Anotador", msg)
+        root.destroy()
+    except Exception:
+        pass
+
+
 def main():
     parser = argparse.ArgumentParser(description="Anotador de trayectorias TIFF -> CSV")
-    parser.add_argument("image", nargs="?", default=IMAGE_PATH)
+    parser.add_argument("image", nargs="?", default=None,
+                        help="Imagen TIFF a anotar. Si se omite, se abre un selector.")
     parser.add_argument("output", nargs="?", default=None,
                         help="CSV de salida. Si se omite, se deriva del nombre de la imagen.")
     args = parser.parse_args()
 
-    if not Path(args.image).exists():
-        sys.exit(f"[ERROR] No existe la imagen: {args.image}")
+    # Imagen: línea de comandos > selector gráfico > IMAGE_PATH (modo desarrollo)
+    image = args.image
+    if image is None:
+        image = pedir_imagen()
+        if not image and Path(IMAGE_PATH).exists():
+            image = IMAGE_PATH
 
-    # Prioridad: ruta por línea de comandos > OUTPUT_CSV fijo > derivado por imagen
+    if not image:
+        _mostrar_error("No se eligió ninguna imagen. Cierro el programa.")
+        sys.exit(1)
+    if not Path(image).exists():
+        _mostrar_error(f"No existe la imagen:\n{image}")
+        sys.exit(1)
+
+    # Prioridad CSV: ruta por línea de comandos > OUTPUT_CSV fijo > derivado por imagen
     output = args.output or OUTPUT_CSV
     if output is None:
-        output = derive_csv_path(args.image)
+        output = derive_csv_path(image)
 
-    Anotador(args.image, output)
+    Anotador(image, output)
     plt.show()
 
 

@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 
 def prepare_loaders(tif_path, csv_path, patch_size=64, batch_size=32, val_split=0.2):
     '''
-    Construye los DataLoaders de entrenamiento y validación.
-    Las partículas etiquetadas como 'aislada' se eliminan automáticamente
+    Construye los DataLoaders de entrenamiento y validacion.
+    Las trayectorias etiquetadas como 'aislada' se eliminan automaticamente
     dentro de build_dataset_from_csv antes de construir los loaders.
 
     Acepta rutas individuales (str) o listas de rutas (list).
@@ -30,16 +30,16 @@ def prepare_loaders(tif_path, csv_path, patch_size=64, batch_size=32, val_split=
     Args:
         tif_path   (str | list[str]): Ruta/s al .tif de 2 canales.
         csv_path   (str | list[str]): Ruta/s al CSV con columnas y, x, clase.
-        patch_size (int):             Tamaño del recorte (default: 64).
-        batch_size (int):             Tamaño del batch (default: 32).
-        val_split  (float):           Fracción para validación (default: 0.2).
+        patch_size (int):             Tamanyo del recorte (default: 64).
+        batch_size (int):             Tamanyo del batch (default: 32).
+        val_split  (float):           Fraccion para validacion (default: 0.2).
 
     Returns:
         tuple: (train_loader, val_loader)
     '''
     n_fuentes = len(tif_path) if isinstance(tif_path, list) else 1
     logger.info(f"Cargando datos de {n_fuentes} fuente/s "
-                f"(las partículas 'aislada' se excluyen automáticamente)...")
+                f"(las taryectorias 'aislada' se excluyen automáticamente)...")
 
     dataset  = build_dataset_from_csv(tif_path, csv_path, patch_size)
     val_size = int(len(dataset) * val_split)
@@ -55,8 +55,8 @@ def prepare_loaders(tif_path, csv_path, patch_size=64, batch_size=32, val_split=
 
 def calcular_metricas(val_scores, val_labels):
     '''
-    Calcula TP, TN, FP, FN al umbral óptimo (el que maximiza F1) y devuelve
-    todas las métricas de la imagen: Recall, Precision, F1 y Cohen's Kappa.
+    Calcula TP, TN, FP, FN al umbral optimo (el que maximiza F1) y devuelve
+    todas las metricas de la imagen: Recall, Precision, F1 y Cohen's Kappa.
 
     Args:
         val_scores (list of float): Probabilidades de clase Interior (clase positiva).
@@ -105,7 +105,7 @@ def calcular_metricas(val_scores, val_labels):
 def calcular_metricas_con_umbral(scores, labels, umbral):
     '''
     Igual que calcular_metricas pero usando un umbral ya conocido en lugar de
-    buscar el óptimo. Se usa para el set de test: las métricas deben calcularse
+    buscar el optimo. Se usa para el set de test: las metricas deben calcularse
     con el umbral guardado durante el entrenamiento (el mismo que usa la red
     para clasificar), no con el que maximiza F1 sobre los datos de test.
 
@@ -148,7 +148,7 @@ def calcular_metricas_con_umbral(scores, labels, umbral):
 def plot_curvas_evaluacion(val_scores, val_labels, save_dir=None, prefijo='val',
                            umbral_externo=None):
     '''
-    Calcula todas las métricas de evaluación del mejor modelo, las imprime
+    Calcula todas las métricas de evaluacion del mejor modelo, las imprime
     por consola y las registra en el log. Genera dos figuras independientes:
       - Curva ROC (FPR vs TPR) con AUC en la leyenda.
       - Curva PR  (Recall vs Precision) con Average Precision en la leyenda.
@@ -156,14 +156,14 @@ def plot_curvas_evaluacion(val_scores, val_labels, save_dir=None, prefijo='val',
 
     El criterio de guardado del modelo sigue siendo exclusivamente el AUC-ROC.
     Las métricas adicionales (Recall, Precision, F1, Kappa) se calculan al
-    umbral óptimo que maximiza F1, solo a efectos informativos.
-    Las métricas NO se muestran dentro de las gráficas — solo por consola y log.
+    umbral optimo que maximiza F1, solo a efectos informativos.
+    Las metricas NO se muestran dentro de las graficas — solo por consola y log.
 
     Args:
-        val_scores     (list of float): Probabilidades de clase Interior (validación).
+        val_scores     (list of float): Probabilidades de clase Interior (validacion).
         val_labels     (list of int):   Etiquetas reales (0=Borde, 1=Interior).
         save_dir       (str | None):    Directorio donde guardar las figuras.
-        umbral_externo (float | None):  Si se indica, las métricas se calculan con
+        umbral_externo (float | None):  Si se indica, las metricas se calculan con
                                         este umbral en lugar de buscar el óptimo.
                                         Usar siempre para test (umbral del modelo).
 
@@ -184,9 +184,9 @@ def plot_curvas_evaluacion(val_scores, val_labels, save_dir=None, prefijo='val',
     precisions, recalls, _ = precision_recall_curve(val_labels, val_scores)
     pr_auc                 = auc(recalls, precisions)
 
-    # ── Métricas ──────────────────────────────────────────────────────────────
-    # Test: usar el umbral del modelo guardado, NO buscar el óptimo sobre test
-    # Validación: buscar el umbral que maximiza F1 sobre validación
+    # ── Metricas ──────────────────────────────────────────────────────────────
+    # Test: usar el umbral del modelo guardado, NO buscar el optimo sobre test
+    # Validacion: buscar el umbral que maximiza F1 sobre validacion
     if umbral_externo is not None:
         m = calcular_metricas_con_umbral(val_scores, val_labels, umbral_externo)
     else:
@@ -660,7 +660,7 @@ def bootstrap_auc(scores, labels, n_iter=1000, ci=95, seed=42):
     Calcula el intervalo de confianza del AUC-ROC y AUC-PR mediante bootstrap.
 
     El bootstrap funciona así: dado un conjunto de N predicciones reales,
-    se remuestrea con reemplazamiento N veces (puede salir la misma partícula
+    se remuestrea con reemplazamiento N veces (puede salir la misma trayectoria
     varias veces y otras no salir). Se calcula el AUC sobre ese remuestreo.
     Repitiendo esto n_iter veces se obtiene una distribución de AUCs posibles.
     Los percentiles (100-ci)/2 y (100+ci)/2 de esa distribución son los límites
@@ -718,10 +718,10 @@ def evaluar_test(model_path, tif_path, csv_path, patch_size=64,
     y devuelve scores y etiquetas para el Excel.
 
     Los datos de test deben estar en CSVs con columna 'clase', igual que los de
-    entrenamiento. Las partículas 'aislada' se excluyen automáticamente.
+    entrenamiento. Las taryectorias 'aislada' se excluyen automáticamente.
 
     Usa el mismo camino de extracción de patches que _generar_csvs_test
-    (partícula a partícula con extract_patch_around_particle), garantizando que
+    (trayectoria a trayectoria con extract_patch_around_particle), garantizando que
     los scores aquí calculados y los del CSV clasificado son idénticos.
 
     Args:
@@ -762,7 +762,7 @@ def evaluar_test(model_path, tif_path, csv_path, patch_size=64,
         umbral = 0.5
         print(f"  [AVISO] Sin umbral guardado, usando 0.5 para test.")
 
-    # ── Extraer scores partícula a partícula (igual que _generar_csvs_test) ───
+    # ── Extraer scores trayectoria a trayectoria(igual que _generar_csvs_test) ───
     # Mismo bucle que _generar_csvs_test para garantizar scores idénticos
     print(f"\n  Cargando datos de test...")
     test_scores = []
@@ -804,10 +804,10 @@ def evaluar_test(model_path, tif_path, csv_path, patch_size=64,
     test_scores = np.array(test_scores)
     test_labels = np.array(test_labels)
 
-    print(f"  Test: {len(test_labels)} partículas evaluadas "
+    print(f"  Test: {len(test_labels)} trayectorias evaluadas "
           f"(borde={int((test_labels==0).sum())}, "
           f"interior={int((test_labels==1).sum())})")
-    logger.info(f"Test: {len(test_labels)} partículas evaluadas")
+    logger.info(f"Test: {len(test_labels)} trayectorias evaluadas")
 
     # ── Curvas y métricas de test ─────────────────────────────────────────────
     plot_curvas_evaluacion(test_scores, test_labels,
@@ -890,7 +890,7 @@ def _generar_csvs_test(tif_path, csv_path, model, patch_size,
         else:
             mask_aisladas = np.zeros(len(df), dtype=bool)
 
-        # ── Cargar imagen y clasificar partículas no aisladas ─────────────────
+        # ── Cargar imagen y clasificar trayectorias no aisladas ─────────────────
         from funciones_auxiliares import load_tif_image, extract_patch_around_particle
         canal_rojo, canal_verde = load_tif_image(tif)
 
@@ -930,7 +930,9 @@ def _generar_csvs_test(tif_path, csv_path, model, patch_size,
 
 
 def train_model(model, train_loader, val_loader, num_epochs=50, lr=0.001,
-                save_dir=None, model_path='best_mito_classifier.pth'):
+                save_dir=None, model_path='best_mito_classifier.pth',
+                early_stopping=False, early_stopping_patience=8,
+                early_stopping_min_delta=0.0):
     '''
     Ejecuta el ciclo completo de entrenamiento y validación.
 
@@ -953,6 +955,18 @@ def train_model(model, train_loader, val_loader, num_epochs=50, lr=0.001,
         lr           (float):      Tasa de aprendizaje inicial (default: 0.001).
         save_dir     (str|None):   Directorio donde guardar las curvas.
         model_path   (str):        Ruta del archivo .pth del modelo.
+        early_stopping           (bool):  Si True, detiene el entrenamiento cuando
+                                          el AUC de validación no mejora durante
+                                          early_stopping_patience epochs seguidas.
+                                          Si False (default), entrena las num_epochs
+                                          completas (comportamiento original).
+        early_stopping_patience  (int):   Epochs consecutivas sin mejora antes de
+                                          parar (default: 8). Solo aplica si
+                                          early_stopping=True.
+        early_stopping_min_delta (float): Mejora mínima de AUC para contar como
+                                          "mejora" y reiniciar el contador
+                                          (default: 0.0). Útil para ignorar
+                                          fluctuaciones de ruido en el plateau.
 
     Returns:
         tuple: (modelo_entrenado, train_losses, val_losses)
@@ -966,7 +980,7 @@ def train_model(model, train_loader, val_loader, num_epochs=50, lr=0.001,
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)
 
-    # ── Cargar el mejor AUC histórico guardado en disco ───────────────────────
+    # ── Cargar el mejor AUC historico guardado en disco ───────────────────────
     # Se guarda en un archivo de texto auxiliar junto al .pth para que
     # entrenamientos sucesivos nunca sobreescriban un modelo mejor.
     auc_record_path = model_path.replace('.pth', '_best_auc.txt')
@@ -991,8 +1005,14 @@ def train_model(model, train_loader, val_loader, num_epochs=50, lr=0.001,
     historial_curvas = []    # checkpoints ROC/PR cada 5 epochs a partir de la 30
     epoch_checkpoint_inicio = 30  # a partir de qué epoch guardar checkpoints
     epoch_checkpoint_cada   = 5   # cada cuántas epochs guardar un checkpoint
+    epochs_sin_mejora       = 0   # contador de epochs consecutivas sin mejora (early stopping)
 
     logger.info(f"Iniciando entrenamiento: {num_epochs} epochs, LR: {lr}")
+    if early_stopping:
+        logger.info(f"Early stopping ACTIVADO: paciencia={early_stopping_patience} "
+                    f"epochs, min_delta={early_stopping_min_delta}")
+        print(f"  Early stopping ACTIVADO: se detendrá tras "
+              f"{early_stopping_patience} epochs sin mejora del AUC.")
 
     for epoch in range(num_epochs):
         model.train()
@@ -1047,6 +1067,19 @@ def train_model(model, train_loader, val_loader, num_epochs=50, lr=0.001,
         logger.info(f'Epoch {epoch+1:2d}: Val AUC {val_auc:.4f} | '
                     f'Train Loss {train_losses[-1]:.3f} | Val Loss {val_losses[-1]:.3f}')
 
+        # ── Early stopping: comprobar mejora ANTES de actualizar best_epoch_auc ──
+        # Se cuenta contra el mejor AUC de ESTE entrenamiento (best_epoch_auc),
+        # NO contra el AUC histórico en disco (best_val_auc). Si se usara el
+        # histórico, un modelo previo bueno dispararía el early stop de inmediato.
+        if early_stopping:
+            if val_auc > best_epoch_auc + early_stopping_min_delta:
+                epochs_sin_mejora = 0
+            else:
+                epochs_sin_mejora += 1
+                logger.info(f'  Early stopping: {epochs_sin_mejora}/'
+                            f'{early_stopping_patience} epochs sin mejora '
+                            f'(mejor AUC={best_epoch_auc:.4f})')
+
         # Actualizar mejor epoch de este entrenamiento (siempre, independiente del histórico)
         if val_auc > best_epoch_auc:
             best_epoch_auc  = val_auc
@@ -1086,6 +1119,15 @@ def train_model(model, train_loader, val_loader, num_epochs=50, lr=0.001,
                 'pr_auc':  sk_auc2(rec_cp, prec_cp),
             })
 
+        # ── Early stopping: parar si se supera la paciencia ──────────────────
+        if early_stopping and epochs_sin_mejora >= early_stopping_patience:
+            print(f'\n  [EARLY STOPPING] Epoch {epoch+1}: '
+                  f'{early_stopping_patience} epochs consecutivas sin mejora '
+                  f'del AUC de validación. Deteniendo entrenamiento.')
+            logger.info(f'Early stopping en epoch {epoch+1} tras '
+                        f'{early_stopping_patience} epochs sin mejora.')
+            break
+
     # ── Curvas y métricas: siempre con el mejor epoch de este entrenamiento ──
     print(f'\nEntrenamiento completado.')
     print(f'  Mejor AUC de este entrenamiento : {best_epoch_auc:.4f}')
@@ -1123,37 +1165,50 @@ def train_model(model, train_loader, val_loader, num_epochs=50, lr=0.001,
 # ──────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
 
-    # ── Opción A: una sola imagen ─────────────────────────────────────────────
+    # ── Opcion A: una sola imagen ─────────────────────────────────────────────
     # TIF_PATH = "datos/SUb_01_2_merged.tif"
     # CSV_PATH = "datos/SUb_01_2_datos_training.csv"
 
-    # ── Opción B: listas manuales ─────────────────────────────────────────────
+    # ── Opcion B: listas manuales ─────────────────────────────────────────────
     # TIF_PATH = ["datos/SUb_01_2_merged.tif", "datos/SUb_01_5_merged.tif"]
     # CSV_PATH = ["datos/SUb_01_2_datos.csv",  "datos/SUb_01_5_datos.csv"]
 
-    # ── Opción C: directorio completo (útil para datos aumentados) ────────────
+    # ── Opcion C: directorio completo ────────────
     TIF_PATH, CSV_PATH = load_pairs_from_dir("../data_augmentation_clase")
 
-    # Directorio donde se guardarán todas las curvas, el Excel y el CSV de metadata
+    # Directorio donde se guardaran todas las curvas, el Excel y el CSV de metadata
     # Ponlo a None si no quieres guardarlas en disco
     SAVE_DIR = "resultados_entrenamiento"
 
     train_loader, val_loader = prepare_loaders(TIF_PATH, CSV_PATH)
 
-    # ── Visualización opcional de patches ─────────────────────────────────────
+    # ── Visualizacion opcional de patches ─────────────────────────────────────
     #visualize_loader(train_loader, n_patches=20, save_dir="vis_patches3/", save_tiff=False)
 
     MODEL_PATH = 'best_mito_classifier.pth'
+
+    # ── Configuración de Early Stopping ───────────────────────────────────────
+    # USAR_EARLY_STOPPING = True  -> el entrenamiento se detiene solo si el AUC de
+    #                                validacion no mejora durante PATIENCE epochs.
+    # USAR_EARLY_STOPPING = False -> entrena siempre las num_epochs completas
+    #                                (comportamiento original).
+    EPOCAS = 300                 # configuracion nro de epocas de entrenamiento
+    USAR_EARLY_STOPPING      = True
+    EARLY_STOPPING_PATIENCE  = 8     # epochs consecutivas sin mejora antes de parar
+    EARLY_STOPPING_MIN_DELTA = 0.0   # mejora minima de AUC para contar como "mejora"
 
     model = MitochondriaContextCNN(num_channels=2, num_classes=2)
     (model, train_losses, val_losses,
      train_accs, val_accs,
      historial_curvas, best_epoch_num,
      best_val_scores, best_val_labels) = train_model(
-        model, train_loader, val_loader, num_epochs=300, lr=0.001,
-        save_dir=SAVE_DIR, model_path=MODEL_PATH)
+        model, train_loader, val_loader, num_epochs=EPOCAS, lr=0.001,
+        save_dir=SAVE_DIR, model_path=MODEL_PATH,
+        early_stopping=USAR_EARLY_STOPPING,
+        early_stopping_patience=EARLY_STOPPING_PATIENCE,
+        early_stopping_min_delta=EARLY_STOPPING_MIN_DELTA)
 
-    # ── Modo test (descomentar cuando tengas el set de test listo) ────────
+    # ── test ──
     TEST_TIF, TEST_CSV = load_pairs_from_dir('../datos_test')
     test_scores, test_labels = evaluar_test(
          model_path = MODEL_PATH,

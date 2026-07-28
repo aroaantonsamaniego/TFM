@@ -16,18 +16,18 @@ CLASS_NAMES = ['Borde', 'Interior']
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Clasificación de una sola partícula
+# Clasificacion de una sola trayectoria
 # ──────────────────────────────────────────────────────────────────────────────
 
 def classify_single_particle(model, canal_rojo, canal_verde, particle_center,
                               patch_size=64, device=None, umbral=0.5):
     """
-    Clasifica UNA partícula pasando su recorte de 2 canales por la red.
+    Clasifica UNA trayectoria pasando su recorte de 2 canales por la red.
 
-    La predicción se obtiene comparando la probabilidad de clase Borde con
+    La prediccion se obtiene comparando la probabilidad de clase Borde con
     el umbral indicado. Por defecto es 0.5, pero se recomienda usar el
-    umbral óptimo guardado durante el entrenamiento (el que maximiza F1
-    sobre validación), cargado automáticamente en classify_from_tif.
+    umbral optimo guardado durante el entrenamiento (el que maximiza F1
+    sobre validacion), cargado automaticamente en classify_from_tif.
 
     Args:
         model           : Red neuronal entrenada.
@@ -36,7 +36,7 @@ def classify_single_particle(model, canal_rojo, canal_verde, particle_center,
         particle_center (tuple): Coordenadas (y, x).
         patch_size      (int): Tamaño del recorte (default: 64).
         device          : Dispositivo torch.
-        umbral          (float): Umbral de decisión sobre prob. de clase Interior (índice 1).
+        umbral          (float): Umbral de decision sobre prob. de clase Interior (indice 1).
 
     Returns:
         tuple: (prediction_idx, probabilities, class_name)
@@ -51,21 +51,21 @@ def classify_single_particle(model, canal_rojo, canal_verde, particle_center,
     with torch.no_grad():
         output        = model(patch_tensor)
         probabilities = F.softmax(output, dim=1).cpu().numpy()[0]
-        # Usar el umbral óptimo en lugar del argmax implícito (umbral=0.5)
+        # Usar el umbral optimo en lugar del argmax implicito (umbral=0.5)
         prediction    = 1 if probabilities[1] >= umbral else 0
 
     return prediction, probabilities, CLASS_NAMES[prediction]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Clasificación sobre uno o varios TIFFs
+# Clasificacion sobre uno o varios TIFFs
 # ──────────────────────────────────────────────────────────────────────────────
 
 def classify_from_tif(model_path, tif_path, positions, patch_size=64):
     """
     Carga el modelo y clasifica listas de posiciones sobre uno o varios TIFFs.
 
-    Carga automáticamente el umbral óptimo guardado durante el entrenamiento
+    Carga automaticamente el umbral optimo guardado durante el entrenamiento
     (fichero <model_path reemplazando .pth por _umbral_optimo.txt>). Si ese
     fichero no existe usa 0.5 como fallback e imprime un aviso.
 
@@ -73,7 +73,7 @@ def classify_from_tif(model_path, tif_path, positions, patch_size=64):
         model_path (str):               Ruta al .pth del modelo entrenado.
         tif_path   (str | list[str]):   Ruta/s al .tif de 2 canales.
         positions  (list | list[list]): Posiciones para un TIFF o lista de listas.
-        patch_size (int):               Tamaño del recorte (default: 64).
+        patch_size (int):               Tamanyo del recorte (default: 64).
 
     Returns:
         list of dict: 'tif_path', 'position', 'prediction', 'probabilities', 'class_name'.
@@ -86,7 +86,7 @@ def classify_from_tif(model_path, tif_path, positions, patch_size=64):
     model.to(device)
     model.eval()
 
-    # ── Cargar umbral óptimo guardado en entrenamiento ────────────────────────
+    # ── Cargar umbral optimo guardado en entrenamiento ────────────────────────
     umbral_path = model_path.replace('.pth', '_umbral_optimo.txt')
     if os.path.exists(umbral_path):
         with open(umbral_path) as f:
@@ -114,7 +114,7 @@ def classify_from_tif(model_path, tif_path, positions, patch_size=64):
 
     results = []
     for tif, pos_list in zip(tif_path, positions):
-        print(f"Clasificando {len(pos_list)} partículas en: {tif}")
+        print(f"Clasificando {len(pos_list)} trayectorias en: {tif}")
         canal_rojo, canal_verde = load_tif_image(tif)
 
         for pos in pos_list:
@@ -134,12 +134,12 @@ def classify_from_tif(model_path, tif_path, positions, patch_size=64):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Evaluación (modo con etiquetas)
+# Evaluacion (modo con etiquetas)
 # ──────────────────────────────────────────────────────────────────────────────
 
 def calcular_metricas_umbral(scores, true_labels, umbral):
     '''
-    Calcula TP, TN, FP, FN y métricas para un umbral concreto.
+    Calcula TP, TN, FP, FN y metricas para un umbral concreto.
 
     Args:
         scores      (array-like): Probabilidades de clase positiva.
@@ -204,8 +204,8 @@ def calcular_metricas(scores, true_labels):
 def plot_tabla_umbrales(scores, true_labels, save_dir=None, umbral_actual=None):
     """
     Genera una tabla consola con TP/TN/FP/FN/Recall/Precision/F1 para
-    distintos umbrales, y guarda una curva Umbral vs métricas en disco.
-    Útil para elegir el umbral óptimo sobre datos de inferencia etiquetados.
+    distintos umbrales, y guarda una curva Umbral vs metricas en disco.
+    util para elegir el umbral optimo sobre datos de inferencia etiquetados.
 
     Args:
         scores        (array-like): Probabilidades de clase Interior.
@@ -279,16 +279,15 @@ def plot_tabla_umbrales(scores, true_labels, save_dir=None, umbral_actual=None):
 
 def evaluate_results(results, true_labels, save_dir=None, umbral_actual=None):
     """
-    Compara predicciones con etiquetas reales, imprime todas las métricas
+    Compara predicciones con etiquetas reales, imprime todas las metricas
     por consola y genera las curvas ROC y PR guardándolas en save_dir.
 
-    Métricas calculadas:
+    Metricas calculadas:
       - AUC-ROC y Average Precision (independientes del umbral)
       - Recall, Precision, F1, Cohen's Kappa (al umbral que maximiza F1)
 
     Las curvas se guardan siempre en disco (en save_dir o en
-    'resultados_clasificacion/' si save_dir es None). No se muestran
-    métricas dentro de las gráficas — solo en consola.
+    'resultados_clasificacion/' si save_dir es None).
 
     Args:
         results     (list of dict): Salida de classify_from_tif.
@@ -315,16 +314,16 @@ def evaluate_results(results, true_labels, save_dir=None, umbral_actual=None):
     precisions, recalls, _ = precision_recall_curve(true_labels, scores)
     pr_auc                 = sk_auc(recalls, precisions)   # igual que en entrenamiento
 
-    # ── Métricas al umbral óptimo ─────────────────────────────────────────────
+    # ── Metricas al umbral optimo ─────────────────────────────────────────────
     m = calcular_metricas(scores, true_labels)
 
-    # ── Métricas al umbral del modelo (el cargado del .txt) ──────────────────
+    # ── Metricas al umbral del modelo (el cargado del .txt) ──────────────────
     u_modelo = umbral_actual if umbral_actual is not None else 0.5
     m_modelo = calcular_metricas_umbral(scores, true_labels, u_modelo)
 
     # ── Consola ───────────────────────────────────────────────────────────────
     sep = "=" * 52
-    # Bloque 1: umbral del modelo (lo que realmente clasificó la red)
+    # Bloque 1: umbral del modelo (lo que realmente clasifico la red)
     print(f"\n{sep}")
     print(f"  MÉTRICAS — UMBRAL DEL MODELO ({u_modelo:.4f})")
     print(f"  (son las métricas reales de lo que clasificó la red)")
@@ -339,7 +338,7 @@ def evaluate_results(results, true_labels, save_dir=None, umbral_actual=None):
     print(f"  AUC-PR         : {pr_auc:.4f}  (área bajo curva PR)")
     print(f"{sep}")
 
-    # Bloque 2: umbral óptimo F1 (referencia)
+    # Bloque 2: umbral optimo F1 (referencia)
     print(f"\n{sep}")
     print(f"  MÉTRICAS — UMBRAL ÓPTIMO F1 ({m['umbral_optimo']:.4f})")
     print(f"  (referencia: qué métricas se obtendrían con este umbral)")
@@ -413,8 +412,8 @@ def evaluate_results(results, true_labels, save_dir=None, umbral_actual=None):
 def save_results_to_csv(csv_path, results_per_csv, aisladas_mask=None,
                          d2v=None, n_vecinas=None):
     """
-    Añade columnas de resultados al CSV original y lo guarda con el sufijo
-    '_clasificado'. Las partículas detectadas como aisladas reciben el valor
+    Anyade columnas de resultados al CSV original y lo guarda con el sufijo
+    '_clasificado'. Las trayectorias detectadas como aisladas reciben el valor
     'Aislada' en la columna 'clasificacion'; el resto recibe la predicción
     de la red junto con las probabilidades individuales de cada clase.
 
@@ -425,15 +424,15 @@ def save_results_to_csv(csv_path, results_per_csv, aisladas_mask=None,
       - dist_verde_px    : distancia al verde (solo modo inferencia)
       - n_vecinas        : nº vecinas en radio (solo modo inferencia)
 
-    También escribe un archivo de log '<nombre>_clasificado.log' en el mismo
-    directorio con el detalle partícula a partícula.
+    Tambien escribe un archivo de log '<nombre>_clasificado.log' en el mismo
+    directorio con el detalletrayectoria a trayectoria.
 
     Args:
         csv_path        (str):             CSV original.
         results_per_csv (list[dict]):      Resultados de la red (solo no-aisladas).
-        aisladas_mask   (np.ndarray bool): Máscara de aisladas sobre todas las filas.
-        d2v             (np.ndarray):      Distancia al verde por partícula.
-        n_vecinas       (np.ndarray):      Nº vecinas en radio por partícula.
+        aisladas_mask   (np.ndarray bool): Mascara de aisladas sobre todas las filas.
+        d2v             (np.ndarray):      Distancia al verde por trayectoria.
+        n_vecinas       (np.ndarray):      Nº vecinas en radio por trayectoria.
 
     Returns:
         str: Ruta del archivo CSV guardado.
@@ -470,7 +469,7 @@ def save_results_to_csv(csv_path, results_per_csv, aisladas_mask=None,
     df.to_csv(out_path, index=False)
     print(f"  Resultados guardados en: {out_path}")
 
-    # ── Log partícula a partícula ─────────────────────────────────────────────
+    # ── Log trayectoria a trayectoria ─────────────────────────────────────────────
     log_path = out_path.with_suffix('.log')
     with open(log_path, 'w', encoding='utf-8') as lf:
         lf.write(f"Clasificación de: {csv_path}\n")
@@ -502,54 +501,57 @@ def save_results_to_csv(csv_path, results_per_csv, aisladas_mask=None,
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Función principal de clasificación
+# Funcion principal de clasificacion
 # ──────────────────────────────────────────────────────────────────────────────
 
 def classify_from_csv(model_path, tif_path, csv_path, patch_size=64,
                       save_dir=None,
-                      umbral_verde=None, umbral_dist=2.0,
-                      usar_conectividad=False):
+                      umbral_verde=0.0, umbral_dist=0.0,
+                      factor_rojo=0.25):
     """
-    Clasifica partículas a partir de uno o varios pares TIFF + CSV.
+    Clasifica trayectorias a partir de uno o varios pares TIFF + CSV.
 
-    Comportamiento según el contenido del CSV:
+    Comportamiento segun el contenido del CSV:
 
-    CON columna 'clase' (modo evaluación):
-        - Las partículas etiquetadas como 'aislada' se excluyen directamente
-          de la clasificación por la red (se marcan como 'Aislada' en el CSV
+    CON columna 'clase' (modo evaluacion):
+        - Las trayectorias etiquetadas como 'aislada' se excluyen directamente
+          de la clasificacion por la red (se marcan como 'Aislada' en el CSV
           de salida sin pasar por el modelo).
-        - El resto se clasifica con la red y se evalúa contra las etiquetas
+        - El resto se clasifica con la red y se evalua contra las etiquetas
           reales: imprime por consola Recall, Precision, F1, Cohen's Kappa,
           AUC-ROC y Average Precision, y guarda las curvas ROC y PR en save_dir.
 
     SIN columna 'clase' (modo inferencia):
-        - Se ejecuta el detector EDT de aisladas sobre cada imagen: se binariza
-          el verde (Otsu si umbral_verde=None), se calcula la transformada de
-          distancia al verde y una partícula se marca aislada si su distancia al
-          verde supera el umbral θ (umbral_dist). Así se excluyen las aisladas.
+        - Se ejecuta el detector de aisladas: se toma el soporte del
+          verde M_g = {I_g > umbral_verde}, se calcula la distancia al verde
+          D_out = EDT(~M_g) y, por cada trayectoria, su distancia mínima d_min
+          sobre el territorio watershed del rojo. Una trayectoria se marca
+          aislada si d_min > θ (umbral_dist). Asi se excluyen las aisladas.
         - El resto se clasifica con la red.
-        - Al final se reporta cuántas partículas se excluyeron como aisladas
+        - Al final se reporta cuantas trayectorias se excluyeron como aisladas
           en cada imagen y en total.
 
     En ambos casos el CSV de salida incluye la columna 'clasificacion' con el
-    resultado ('Borde', 'Interior' o 'Aislada') para cada partícula, además de
-    la columna auxiliar 'dist_verde_px' (distancia EDT al verde) en inferencia.
+    resultado ('Borde', 'Interior' o 'Aislada') para cada trayectoria, ademas de
+    la columna auxiliar 'dist_verde_px' (= d_min, distancia al verde) en inferencia.
 
     Args:
         model_path   (str):             Ruta al .pth del modelo.
         tif_path     (str | list[str]): Ruta/s al .tif de 2 canales.
         csv_path     (str | list[str]): Ruta/s al CSV (con o sin columna 'clase').
-        patch_size   (int):             Tamaño del recorte (default: 64).
+        patch_size   (int):             Tamanyo del recorte (default: 64).
         save_dir     (str | None):      Directorio donde guardar curva_ROC.png y
                                         curva_PR.png en modo evaluación.
                                         Si es None se usa 'resultados_clasificacion/'.
-        umbral_verde (float | None):    Umbral de binarización del verde para la EDT.
-                                        None -> Otsu automático por imagen (recomendado).
-        umbral_dist  (float):           Umbral de distancia θ (px): aislada ⟺ d_g > θ.
-                                        Valor fijo obtenido del barrido de detectar_aisladas.
+        umbral_verde (float):           t_g del soporte del verde M_g={I_g>t_g}.
+                                        optimo empirico: 0.0 (=> M_g = {I_g > 0}).
+        umbral_dist  (float):           Umbral de distancia θ (px): aislada ⟺ d_min > θ.
+                                        optimo empirico: 0.0.
+        factor_rojo  (float):           t_r = factor_rojo * Otsu(rojo>0) para los
+                                        territorios watershed. Optimo empirico: 0.25.
 
     Returns:
-        list of dict: Una entrada por partícula NO aislada, con claves:
+        list of dict: Una entrada por trayectoria NO aislada, con claves:
                       'tif_path', 'position', 'prediction', 'probabilities',
                       'class_name' y, en modo evaluación, 'true_label'.
     """
@@ -566,8 +568,8 @@ def classify_from_csv(model_path, tif_path, csv_path, patch_size=64,
 
     # ── Leer todos los CSVs: posiciones directamente del DataFrame ───────────
     # Se lee el DataFrame directamente (no load_labels_csv) para garantizar
-    # que el orden (y, x) es idéntico al de evaluar_test y _generar_csvs_test.
-    all_positions_orig = []  # posiciones (y, x) de TODAS las partículas (inc. aisladas)
+    # que el orden (y, x) es identico al de evaluar_test y _generar_csvs_test.
+    all_positions_orig = []  # posiciones (y, x) de TODAS las trayectorias (inc. aisladas)
     all_clases_raw     = []  # etiquetas texto originales (o None)
     has_labels         = []
 
@@ -590,7 +592,7 @@ def classify_from_csv(model_path, tif_path, csv_path, patch_size=64,
         evaluation_mode = False
 
     # ── Procesar cada par ─────────────────────────────────────────────────────
-    all_results_red   = []   # solo resultados de partículas que pasan por la red
+    all_results_red   = []   # solo resultados de trayectorias que pasan por la red
     all_true_labels   = []   # etiquetas reales de las que pasan por la red
     total_aisladas    = 0
     total_clasificadas = 0
@@ -613,14 +615,15 @@ def classify_from_csv(model_path, tif_path, csv_path, patch_size=64,
             d2v       = None
             n_vecinas = None
         else:
-            # ── Sin etiquetas: detectar aisladas con EDT al verde ─────────────
-            print(f"\n  Detectando aisladas con EDT (verde) en: {tif}")
+            # ── Sin etiquetas: detectar aisladas con filtro ───────
+            #    (territorios watershed + d_min sobre M_g = {I_g > umbral_verde})
+            print(f"\n  Detectando aisladas en: {tif}")
             mask_aisladas, d2v, n_vecinas = detectar_aisladas_EDT(
                 canal_verde, positions_orig,
                 canal_rojo=canal_rojo,
-                umbral_verde=umbral_verde,        # None -> Otsu automático por imagen
-                umbral_dist=umbral_dist,          # θ fijo (óptimo del barrido)
-                usar_conectividad=usar_conectividad,
+                umbral_verde=umbral_verde,        # t_g soporte del verde (optimo: 0)
+                umbral_dist=umbral_dist,          # θ fijo (optimo empirico: 0)
+                factor_rojo=factor_rojo,          # t_r = factor_rojo * Otsu(rojo>0)
             )
 
         n_aisladas    = int(mask_aisladas.sum())
@@ -628,14 +631,14 @@ def classify_from_csv(model_path, tif_path, csv_path, patch_size=64,
         total_aisladas    += n_aisladas
         total_clasificadas += len(pos_no_aisl)
 
-        print(f"  {tif}: {n_total} partículas → "
+        print(f"  {tif}: {n_total} trayectorias → "
               f"{n_aisladas} aisladas excluidas, "
               f"{len(pos_no_aisl)} pasan por la red.")
 
         tif_paths_red.append(tif)
         pos_lists_red.append(pos_no_aisl)
 
-        # Etiquetas reales de las no-aisladas (solo en modo evaluación)
+        # Etiquetas reales de las no-aisladas (solo en modo evaluacion)
         if evaluation_mode:
             # Mismo mapeo que evaluar_test en entrenamiento.py
             CLASS_MAP = {'borde': 0, 'interior': 1, 'exterior': 1}
@@ -652,7 +655,7 @@ def classify_from_csv(model_path, tif_path, csv_path, patch_size=64,
         })
 
     # ── Clasificar con la red todas las no-aisladas de todos los TIFFs ────────
-    print(f"\n  Clasificando {total_clasificadas} partículas con la red neuronal...")
+    print(f"\n  Clasificando {total_clasificadas} trayectorias con la red neuronal...")
     all_results_red = classify_from_tif(model_path, tif_paths_red,
                                          pos_lists_red, patch_size)
 
@@ -672,24 +675,24 @@ def classify_from_csv(model_path, tif_path, csv_path, patch_size=64,
 
     # ── Resumen de aisladas excluidas ─────────────────────────────────────────
     print(f"\n{'─'*55}")
-    print(f"  RESUMEN DE PARTÍCULAS AISLADAS EXCLUIDAS")
+    print(f"  RESUMEN DE TRAYECTORIAS AISLADAS EXCLUIDAS")
     print(f"{'─'*55}")
     for meta in meta_por_csv:
         n_aisl = int(meta['mask_aisladas'].sum())
         n_tot  = len(meta['mask_aisladas'])
-        modo   = "etiqueta" if evaluation_mode else "detector EDT (verde)"
+        modo   = "etiqueta" if evaluation_mode else "Etapa 1 EDT (d_min)"
         print(f"  {Path(meta['csv']).name}: "
               f"{n_aisl}/{n_tot} excluidas ({modo})")
     print(f"  TOTAL: {total_aisladas} aisladas excluidas de "
-          f"{total_aisladas + total_clasificadas} partículas.")
+          f"{total_aisladas + total_clasificadas} trayectorias.")
     print(f"{'─'*55}")
 
-    # ── Modo evaluación: añadir true_label y calcular métricas ───────────────
+    # ── Modo evaluacion: anyadir true_label y calcular metricas ───────────────
     if evaluation_mode:
         for r, true_lbl in zip(all_results_red, all_true_labels):
             r['true_label'] = true_lbl
 
-        print(f"\nModo evaluación: {len(all_results_red)} partículas "
+        print(f"\nModo evaluación: {len(all_results_red)} trayectorias "
               f"clasificadas por la red (aisladas excluidas previamente).")
         # Pasar el umbral cargado del .txt para marcarlo en la curva y la tabla
         umbral_cargado = getattr(classify_from_tif, "_ultimo_umbral", None)
@@ -705,27 +708,28 @@ def classify_from_csv(model_path, tif_path, csv_path, patch_size=64,
 if __name__ == "__main__":
     MODEL_PATH = "best_mito_classifier.pth"
 
-    # ── Opción A: una sola imagen ─────────────────────────────────────────────
-    TIF_PATH = "../datos_clasificar/SUb_02_10_orig.tif"
-    CSV_PATH = "../datos_clasificar/SUb_02_10_orig.csv" 
+    # ── Opcion A: una sola imagen ─────────────────────────────────────────────
+    TIF_PATH = "../datos/imagenes_nuevas/SUboligo_02_3_merged.tif"
+    CSV_PATH = "../datos/imagenes_nuevas/SUboligo_02_3_merged_anotaciones.csv" 
     
 
-    # ── Opción B: listas manuales ─────────────────────────────────────────────
+    # ── Opcion B: listas manuales ─────────────────────────────────────────────
     # TIF_PATH = ["datos/img1.tif", "datos/img2.tif"]
     # CSV_PATH = ["datos/img1.csv", "datos/img2.csv"]
 
-    # ── Opción C: directorio completo ─────────────────────────────────────────
+    # ── Opcion C: directorio completo ─────────────────────────────────────────
     #TIF_PATH, CSV_PATH = load_pairs_from_dir("data_augmentation")
 
-    # Directorio donde guardar curva_ROC.png y curva_PR.png (modo evaluación)
+    # Directorio donde guardar curva_ROC.png y curva_PR.png (modo evaluacion)
     # None = se usa 'resultados_clasificacion/' por defecto
     SAVE_DIR = "resultados_clasificacion"
 
     classify_from_csv(
         MODEL_PATH, TIF_PATH, CSV_PATH,
         save_dir=SAVE_DIR,
-        # Parámetros del detector EDT (solo se usan en modo inferencia, sin 'clase'):
-        umbral_verde=None,      # None -> Otsu (umbral del verde automático por imagen)
-        umbral_dist=16.0,        # θ fijo: pon aquí el óptimo de tu barrido
-        usar_conectividad=False,
+        # Parametros de la Etapa de filtrado de trayectorias aisladas (solo se usan en modo inferencia, sin 'clase').
+        # los valores por defecto son los optimos empiricos, no deberia hacer falta tocarlos.
+        umbral_verde=0.0,       # t_g soporte del verde  M_g = {I_g > 0}
+        umbral_dist=0.0,        # θ: aislada ⟺ d_min > θ
+        factor_rojo=0.25,       # t_r = factor_rojo * Otsu(rojo>0) para el watershed
     )

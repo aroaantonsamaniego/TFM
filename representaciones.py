@@ -24,7 +24,7 @@ python representaciones.py --run run1 run3 run5
 
 
 # =========================================================
-# CONFIGURACIÓN GLOBAL
+# CONFIGURACION GLOBAL
 # =========================================================
 
 # Directorio con los archivos de cada run.
@@ -33,8 +33,8 @@ RUNS_DIR = "deep_ensemble/300_epocs/train"
 
 OUTPUT_DIR = "deep_ensemble/300_epocs/figuras"
 
-# Baseline de la curva PR (fracción de positivos en test — siempre igual)
-PR_BASELINE_TEST = 0.18
+# Baseline de la curva PR (fraccion de positivos en test — siempre igual)
+PR_BASELINE_TEST = 0.26
 
 # =========================================================
 # PARÁMETROS GLOBALES DE MATPLOTLIB
@@ -52,18 +52,15 @@ plt.rc('axes',   labelsize=20)
 plt.rc('legend', fontsize=16)
 plt.rcParams['font.family'] = 'Times New Roman'
 
-# Tamaño para figuras cuadradas: ROC y PR (ambos ejes 0→1)
+# Tamanyo para figuras cuadradas: ROC y PR (ambos ejes 0→1)
 FIG_SIZE = (9, 9)
-# Tamaño para figuras con eje X abierto: loss, accuracy, umbral
+# Tamanyo para figuras con eje X abierto: loss, accuracy, umbral
 FIG_SIZE_WIDE = (12, 7)
 
 # Paleta de colores — una por run
 COLORES = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
            '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
 
-# =========================================================
-# UTILIDADES
-# =========================================================
 
 def _save_svg(fig, name):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -94,7 +91,7 @@ def _add_textbox(ax, text, loc='lower right', fontsize=16):
 
 def compute_mean_curve(xy_list):
     """
-    Interpola una lista de (x, y) a un eje X común y devuelve
+    Interpola una lista de (x, y) a un eje X comun y devuelve
     (common_x, mean_y, std_y, mean_auc).
     Sólo interpola dentro del rango compartido por todas las curvas.
     """
@@ -181,7 +178,7 @@ def load_runs(runs_dir):
 
 
 # =========================================================
-# FIGURAS POR RUN: pérdidas y umbral
+# FIGURAS POR RUN: perdidas y umbral
 # =========================================================
 
 def plot_loss_acc(runs):
@@ -214,7 +211,7 @@ def plot_loss_acc(runs):
         fig.tight_layout()
         _save_svg(fig, f"{name}_accuracy")
 
-    # ── Combinadas (sólo si hay más de un run) ────────────────────────────────
+    # ── Combinadas (solo si hay mas de un run) ────────────────────────────────
     if len(runs) > 1:
         for col, ylabel, title, fname in [
             ('Train_Loss', 'Loss',          'Training Loss — All Runs',      'all_train_loss'),
@@ -236,7 +233,7 @@ def plot_loss_acc(runs):
 
 def plot_umbral(runs):
     """
-    Curva umbral vs Recall / Precision / F1 — SÓLO TEST.
+    Curva umbral vs Recall / Precision / F1 — solo test.
     Una figura individual por run, más una combinada si hay varios.
     El umbral óptimo del modelo se marca con línea vertical,
     y los valores de recall y precision óptimos con líneas horizontales.
@@ -427,7 +424,7 @@ def plot_roc_pr_test(runs):
 
 
 # =========================================================
-# TABLA DE MÉTRICAS POR CONSOLA
+# TABLA DE METRICAS POR CONSOLA
 # =========================================================
 
 def print_metrics_table(runs):

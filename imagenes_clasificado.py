@@ -1,5 +1,5 @@
 """
-1. Genera un PNG de visualización con los puntos coloreados sobre la imagen BN.
+1. Genera un PNG de visualizacion con los puntos coloreados sobre la imagen BN.
 2. Guarda un TIFF multicanal (ImageJ/Fiji hyperstack) con 4 canales:
       Canal 1 → imagen original (blend de canales del TIFF de entrada)
       Canal 2 → máscara Borde    (discos gaussianos, valores 0-255)
@@ -9,7 +9,7 @@
    Fiji lo abre directamente como hyperstack multicanal (C=4, Z=1, T=1).
    Usa Make Composite + Channels Tool para asignar colores.
 
-3. (Opcional) Calcula métricas de clasificación (TP, FP, TN, FN, Precision,
+3. (Opcional) Calcula metricas de clasificacion (TP, FP, TN, FN, Precision,
    Recall, F1, Specificity por clase + Accuracy y Kappa global) comparando
    un CSV con ground truth y otro con las predicciones. Guarda los resultados
    en un CSV.
@@ -86,7 +86,7 @@ def mascara_gaussiana(h, w, puntos_x, puntos_y, sigma):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Métricas (opcional)
+# Metricas (opcional)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def calcular_metricas(csv_original, csv_clasificado, col_x, col_y,
@@ -159,7 +159,7 @@ def calcular_metricas(csv_original, csv_clasificado, col_x, col_y,
     gt   = merged[col_gt].str.strip().str.capitalize()
     pred = merged[col_pred].str.strip().str.capitalize()
 
-    # ── Tabla de confusión binaria (Interior = positivo) ──────────────────────
+    # ── Tabla de confusion binaria (Interior = positivo) ──────────────────────
     # TP: predicho Interior y era Interior
     # FP: predicho Interior pero era Borde
     # FN: predicho Borde pero era Interior
@@ -169,7 +169,7 @@ def calcular_metricas(csv_original, csv_clasificado, col_x, col_y,
     fn = int(((gt == 'Interior') & (pred == 'Borde')).sum())
     tn = int(((gt == 'Borde')    & (pred == 'Borde')).sum())
 
-    # ── Fórmulas de la imagen (valores en %) ─────────────────────────────────
+    # ── Formulas de la imagen ─────────────────────────────────
     recall    = 100 * tp / (tp + fn) if (tp + fn) > 0 else 0.0
     precision = 100 * tp / (tp + fp) if (tp + fp) > 0 else 0.0
     f1        = (2 * precision * recall / (precision + recall)
@@ -259,7 +259,7 @@ def calcular_metricas(csv_original, csv_clasificado, col_x, col_y,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Función principal
+# Funcion principal
 # ─────────────────────────────────────────────────────────────────────────────
 
 def main(imagen, csv, col_x, col_y, col_label, salida_png, salida_tif,
@@ -298,7 +298,7 @@ def main(imagen, csv, col_x, col_y, col_label, salida_png, salida_tif,
     n_interior = len(mask_interior)
     print(f"    Borde: {n_borde} | Aislada: {n_aislada} | Interior: {n_interior}")
 
-    # ── PNG de visualización ──────────────────────────────────────────────────
+    # ── PNG de visualizacion ──────────────────────────────────────────────────
     print(f"[·] Generando PNG: {salida_png}")
     fig, ax = plt.subplots(figsize=(w / 100, h / 100), dpi=dpi)
     ax.imshow(blend, cmap="gray", vmin=0, vmax=1, extent=[0, w, h, 0])
@@ -327,7 +327,7 @@ def main(imagen, csv, col_x, col_y, col_label, salida_png, salida_tif,
     plt.close(fig)
     print(f"    Guardado: {salida_png}")
 
-    # ── Máscaras gaussianas ───────────────────────────────────────────────────
+    # ── Mascaras gaussianas ───────────────────────────────────────────────────
     print(f"[·] Generando máscaras gaussianas (sigma={sigma} px)...")
 
     canal_original = (blend * 255).astype(np.uint8)
@@ -348,7 +348,7 @@ def main(imagen, csv, col_x, col_y, col_label, salida_png, salida_tif,
     print(f"    → Image > Color > Make Composite")
     print(f"    → Image > Color > Channels Tool (Shift+Z) para asignar colores")
 
-    # ── Métricas (opcional) ───────────────────────────────────────────────────
+    # ── Metricas (opcional) ───────────────────────────────────────────────────
     if calcular_metricas_flag:
         calcular_metricas(
             csv_original=csv_gt,
@@ -364,34 +364,74 @@ def main(imagen, csv, col_x, col_y, col_label, salida_png, salida_tif,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Parámetros — editar aquí
+# Parametros 
 # ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
 
-    # ── Visualización (siempre activo) ────────────────────────────────────────
-    imagen      = "../datos/SUb_02_10_merged.tif"
-    csv         = "../resultados/resultados_EDT/SUb_02_10_clasificado_EDT.csv"
+    DIRECTORIO_IMAGENES = "../datos/definitivos/test"                            # TIFFs de entrada
+    DIRECTORIO_CSV      = "../resultados/early_stopping2/clasificado/por_imagen" # CSVs de entrada
+    DIRECTORIO_SALIDA   = "../resultados/early_stopping2/clasificado/imagenes"   # PNG, TIFF, métricas
+
+    NOMBRE_IMAGEN = "Sub_02_10.tif"
+    NOMBRE_CSV    = "Sub_02_10_clasificado_test_ensemble.csv"
+
+    # ── Nombre de los archivos de salida ──────────────────────────────────────
+    # Se construyen como: <NOMBRE_BASE><SUFIJO_SALIDA>.png / .tif
+    #                     <NOMBRE_BASE><SUFIJO_SALIDA>_metricas.csv
+    #
+    # NOMBRE_BASE = None → nombre de la imagen sin extensión.
+    #   'SUb_02_10.tif' → 'SUb_02_10_clasificada.png'
+    # Para un caso suelto con otro nombre, poner NOMBRE_BASE a mano.
+    NOMBRE_BASE   = None
+    SUFIJO_SALIDA = "_clasificada"
+
+    # ═════════════════════════════════════════════════════════════════════════
+
+    # ── Visualizacion ────────────────────────────────────────
     col_x       = "X"
     col_y       = "Y"
     col_label   = "clasificacion"   # columna a visualizar en el PNG/TIFF
-    salida_png  = "SUb_02_10_clasificado_EDT.png"
-    salida_tif  = "SUb_02_10_clasificado_EDT.tif"
     dpi         = 150
     radio_plot  = 6
     sigma       = 2
     sin_leyenda = False
 
-    # ── Métricas (opcional) ───────────────────────────────────────────────────
-    # Poner a True para activar el cálculo de métricas
+    # ── Metricas (opcional) ───────────────────────────────────────────────────
+    # Poner a True para activar el calculo de metricas
     calcular_metricas_flag = True
 
-    csv_gt          = "../resultados/resultados_EDT/SUb_02_10_clasificado_EDT.csv"          # ground truth
-    col_gt          = "Clase"                                         # columna GT
-    csv_pred        = "../resultados/resultados_EDT/SUb_02_10_clasificado_EDT.csv"  # predicciones
-    col_pred        = "clasificacion"                                 # columna pred
-    salida_metricas = "SUb_02_10_metricas_clasificado_EDT.csv"
+    # Nombres de archivo dentro de DIRECTORIO_CSV.
+    # None → se usa NOMBRE_CSV (el CSV del ensemble ya lleva Clase y clasificacion)
+    NOMBRE_CSV_GT   = None          # ground truth
+    NOMBRE_CSV_PRED = None          # predicciones
+    col_gt          = "Clase"       # columna GT
+    col_pred        = "clasificacion"  # columna pred
     # ─────────────────────────────────────────────────────────────────────────
+
+    # ── Construccion de rutas ─────────────────────────────────────────────────
+    dir_img = Path(DIRECTORIO_IMAGENES)
+    dir_csv = Path(DIRECTORIO_CSV)
+    dir_out = Path(DIRECTORIO_SALIDA)
+    dir_out.mkdir(parents=True, exist_ok=True)
+
+    imagen = str(dir_img / NOMBRE_IMAGEN)
+    csv    = str(dir_csv / NOMBRE_CSV)
+
+    # Nombre base de las salidas: el de la imagen sin extension
+    base = NOMBRE_BASE if NOMBRE_BASE else Path(NOMBRE_IMAGEN).stem
+
+    salida_png      = str(dir_out / f"{base}{SUFIJO_SALIDA}.png")
+    salida_tif      = str(dir_out / f"{base}{SUFIJO_SALIDA}.tif")
+    salida_metricas = str(dir_out / f"{base}{SUFIJO_SALIDA}_metricas.csv")
+
+    csv_gt   = str(dir_csv / NOMBRE_CSV_GT)   if NOMBRE_CSV_GT   else csv
+    csv_pred = str(dir_csv / NOMBRE_CSV_PRED) if NOMBRE_CSV_PRED else csv
+
+    print(f"[·] Entrada imagen : {imagen}")
+    print(f"[·] Entrada CSV    : {csv}")
+    print(f"[·] Salida         : {dir_out.absolute()}")
+    print(f"[·] Nombre base    : {base}{SUFIJO_SALIDA}")
 
     main(
         imagen=imagen, csv=csv, col_x=col_x, col_y=col_y,

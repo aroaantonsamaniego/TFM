@@ -2,25 +2,34 @@
 promediar_clasificacion.py
 ──────────────────────────
 Combina las clasificaciones de N runs usando SOFT VOTING: promedia las
-probabilidades de clase Interior fila a fila y aplica un umbral óptimo
+probabilidades de clase Interior fila a fila y aplica un umbral optimo
 (el que maximiza F1) sobre el promedio.
 
-Si los CSVs tienen columna 'Clase' (etiqueta real), calcula además:
+Salidas de clasificacion:
+  - ensemble_clasificacion.csv        → todas las imagenes juntas (columna 'imagen')
+  - por_imagen/<id_imagen>_ensemble.csv → un CSV por imagen, con el formato de
+    entrada de imagenes_clasificado.py (X, Y, Clase, clasificacion, prob_interior)
+
+Si los CSVs tienen columna 'Clase' (etiqueta real), calcula ademas:
   - Curvas ROC y PR del ensemble              → SVG
   - Curva Precision / Recall / F1 vs umbral  → SVG
   - Métricas (AUC-ROC, AUC-PR, Precision, Recall, F1, Kappa,
     TP, TN, FP, FN, umbral)                  → CSV
 
-Si no hay etiquetas, genera solo el CSV de clasificación final.
+Si no hay etiquetas, genera solo el CSV de clasificacion final.
 
 Uso:
-    python promediar_clasificacion.py                   # directorio 'clasificado/' por defecto
-    python promediar_clasificacion.py mis_resultados/   # directorio indicado
+    python promediar_clasificacion.py                     # usa el cuadro DIRECTORIOS
+    python promediar_clasificacion.py mis_resultados/     # sobrescribe la entrada
     python promediar_clasificacion.py dir/ --umbral 0.35  # umbral fijo manual
     python promediar_clasificacion.py dir/ --salida resultados_ensemble/
+
+Los argumentos de consola son opcionales: si no se pasan, se usan los valores
+del cuadro de configuración DIRECTORIOS (abajo).
 """
 
 import sys
+import re
 import argparse
 import pandas as pd
 import numpy as np
@@ -33,9 +42,27 @@ from sklearn.metrics import (roc_curve, auc, precision_recall_curve,
                              cohen_kappa_score, confusion_matrix)
 
 
+
+#DIRECTORIOS                          
+# Rutas relativas al directorio desde el que se lanza el script, o absolutas.
+# Los argumentos de consola, si se pasan, tienen prioridad sobre estos valores.
+
+# Directorio con los CSVs de cada run ('run1_*.csv', 'run2_*.csv', ...)
+DIRECTORIO_ENTRADA = "../resultados/early_stopping2/clasificado"
+
+# Directorio donde se guardan CSVs y figuras del ensemble.
+# None → mismo directorio que DIRECTORIO_ENTRADA
+DIRECTORIO_SALIDA  = None
+
+# Umbral fijo sobre la probabilidad media de Interior.
+# None → se calcula el optimo (el que maximiza F1)
+UMBRAL_MANUAL      = None
+
+# ═════════════════════════════════════════════════════════
+
+
 # =========================================================
-# CONFIGURACIÓN GLOBAL DE MATPLOTLIB
-# (mismo estilo que representaciones.py — editar aquí)
+# CONFIGURACION GLOBAL DE MATPLOTLIB
 # =========================================================
 
 plt.rcParams['svg.fonttype']        = 'none'
@@ -56,26 +83,43 @@ FIG_SIZE      = (9, 9)
 FIG_SIZE_WIDE = (12, 7)
 
 # Fracción de positivos en el set de test (línea de referencia en la curva PR)
-PR_BASELINE = 0.18
+PR_BASELINE = 0.26
 
 
 # =========================================================
 # NOMBRES DE COLUMNAS EN LOS CSVs DE CADA RUN
-# (ajustar si cambian los nombres en el pipeline)
 # =========================================================
 
 COL_X             = 'X'
 COL_Y             = 'Y'
 COL_CLASE         = 'Clase'          # etiqueta real (opcional)
-COL_CLASIFICACION = 'clasificacion'  # predicción del modelo
+COL_CLASIFICACION = 'clasificacion'  # prediccion del modelo
 COL_PROB_INT      = 'prob_interior'  # probabilidad de clase Interior
 
-# Mapeo etiqueta real → numérico (Interior/Exterior = positivo = 1)
+# Mapeo etiqueta real - numerico 
 CLASS_MAP = {'interior': 1, 'exterior': 1, 'borde': 0}
 
 
 # =========================================================
-# UTILIDADES DE ESTILO (réplica de representaciones.py)
+# SALIDA DE CSVs POR IMAGEN
+# (formato de entrada de imagenes_clasificado.py:
+#  X, Y, Clase, clasificacion, prob_interior — un CSV por imagen)
+# =========================================================
+
+GUARDAR_CSV_POR_IMAGEN = True          # False → solo el CSV global
+SUBDIR_POR_IMAGEN      = 'por_imagen'  # '' o None → mismo directorio de salida
+SUFIJO_POR_IMAGEN      = '_ensemble'   # nombre: <id_imagen><SUFIJO>.csv
+INCLUIR_COL_IMAGEN     = False         # True → deja la columna 'imagen' también
+                                       # en los CSVs por imagen
+
+# Prefijos de los CSVs que genera este mismo script. Se excluyen del glob de
+# entrada para que una segunda ejecución sobre el mismo directorio no los
+# confunda con CSVs de runs.
+PREFIJOS_SALIDA = ('ensemble_',)
+
+
+# =========================================================
+# UTILIDADES DE ESTILO
 # =========================================================
 
 def _save_svg(fig, path: Path):
@@ -106,7 +150,7 @@ def _add_textbox(ax, text, loc='lower right', fontsize=16):
 
 
 # =========================================================
-# MÉTRICAS
+# METRICAS
 # =========================================================
 
 def calcular_metricas_umbral(y_true, scores, umbral):
@@ -132,7 +176,72 @@ def umbral_optimo_f1(y_true, scores):
 
 
 # =========================================================
-# FUNCIÓN PRINCIPAL
+# AGRUPACION DE CSVs POR RUN
+# =========================================================
+
+def _run_prefix(nombre: str):
+    """
+    Extrae el prefijo de run del nombre de archivo: 'run1', 'run2', ...
+    Devuelve el prefijo en minúsculas, o None si el archivo no empieza por 'runN'.
+    Ej: 'run3_SUb_02_10_orig_clasificado_test.csv' -> 'run3'
+    """
+    m = re.match(r'^(run\d+)', nombre, flags=re.IGNORECASE)
+    return m.group(1).lower() if m else None
+
+
+def _image_id(nombre: str):
+    """
+    Identificador de imagen: nombre de archivo sin el prefijo 'runN_' y sin
+    extensión. Es idéntico para la misma imagen entre runs distintos, y distinto
+    entre imágenes, de modo que sirve como clave para emparejar trayectrias.
+    Ej: 'run3_SUb_02_10_orig_clasificado_test.csv' -> 'SUb_02_10_orig_clasificado_test'
+    """
+    stem = Path(nombre).stem
+    return re.sub(r'^run\d+[_-]?', '', stem, flags=re.IGNORECASE)
+
+
+def _nombre_seguro(texto: str) -> str:
+    """
+    Sanea un identificador de imagen para usarlo como nombre de archivo:
+    sustituye por '_' cualquier carácter no válido en Windows/Linux.
+    """
+    return re.sub(r'[^\w\-.]', '_', str(texto))
+
+
+def agrupar_por_run(csv_paths: list):
+    """
+    Agrupa los CSVs por su prefijo de run ('runN_...'). Todos los archivos que
+    comparten el mismo prefijo (es decir, las distintas imágenes de test
+    clasificadas por el mismo modelo) se asignan al mismo run.
+
+    Los archivos que no empiecen por 'runN' se tratan como un run independiente
+    (usando su nombre completo como clave), preservando el comportamiento previo
+    para nomenclaturas antiguas.
+
+    Args:
+        csv_paths (list[str]): Rutas a todos los CSVs encontrados.
+
+    Returns:
+        dict[str, list[str]]: {nombre_run: [rutas de sus CSVs]}, ordenado de
+                              forma natural (run1, run2, ..., run10).
+    """
+    runs = {}
+    for p in csv_paths:
+        nombre = Path(p).name
+        run = _run_prefix(nombre)
+        if run is None:
+            run = Path(p).stem  # sin prefijo runN → run propio (compat. antigua)
+        runs.setdefault(run, []).append(p)
+
+    def _clave_orden(r):
+        m = re.search(r'(\d+)', r)
+        return (int(m.group(1)) if m else 0, r)
+
+    return {k: runs[k] for k in sorted(runs, key=_clave_orden)}
+
+
+# =========================================================
+# FUNCION PRINCIPAL
 # =========================================================
 
 def soft_voting_ensemble(csv_paths: list,
@@ -156,60 +265,93 @@ def soft_voting_ensemble(csv_paths: list,
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    print(f"\nCargando {len(csv_paths)} runs...")
+    # ── Agrupar los CSVs por prefijo de run (runN_...) ───────────────────────
+    # Cada run puede contener varias imágenes de test (varios CSVs). Todas las
+    # imagenes de un mismo run se concatenan y el voto se hace ENTRE runs.
+    runs = agrupar_por_run(csv_paths)
+    run_names = list(runs.keys())
+    n_runs    = len(run_names)
 
-    # ── 1. Leer CSVs ─────────────────────────────────────────────────────────
+    if n_runs < 2:
+        raise ValueError(
+            f"Se necesitan al menos 2 runs para el ensemble, pero solo se "
+            f"detectó {n_runs} a partir de los nombres de archivo: {run_names}.\n"
+            f"Comprueba que los CSVs empiecen por 'run1_', 'run2_', ...")
+
+    print(f"\nDetectados {n_runs} runs a partir de los nombres de archivo:")
+    for r in run_names:
+        imgs = [_image_id(Path(p).name) for p in runs[r]]
+        print(f"  {r}: {len(runs[r])} imagen(es) -> {imgs}")
+
+    print(f"\nCargando {n_runs} runs...")
+
+    # ── 1. Leer CSVs, un dataframe por RUN (concatenando sus imágenes) ───────
     dfs_prob  = []
     clase_ref = None
     tiene_etiquetas = True
 
-    for i, path in enumerate(csv_paths):
-        df = pd.read_csv(path, encoding='utf-8-sig')
-        # Normalizar nombres de columna para el merge interno
-        df_work = df.copy()
-        df_work.columns = [c.strip() for c in df_work.columns]
+    for i, run_name in enumerate(run_names):
+        piezas     = []
+        n_aisl_run = 0
 
-        # Verificar columnas obligatorias
-        for col in [COL_X, COL_Y, COL_CLASIFICACION, COL_PROB_INT]:
-            if col not in df_work.columns:
-                raise ValueError(
-                    f"El CSV '{path}' no tiene la columna '{col}'.\n"
-                    f"Columnas disponibles: {list(df_work.columns)}")
+        for path in runs[run_name]:
+            df = pd.read_csv(path, encoding='utf-8-sig')
+            # Normalizar nombres de columna para el merge interno
+            df_work = df.copy()
+            df_work.columns = [c.strip() for c in df_work.columns]
 
-        df_work['_x'] = df_work[COL_X].round(1)
-        df_work['_y'] = df_work[COL_Y].round(1)
+            # Verificar columnas obligatorias
+            for col in [COL_X, COL_Y, COL_CLASIFICACION, COL_PROB_INT]:
+                if col not in df_work.columns:
+                    raise ValueError(
+                        f"El CSV '{path}' no tiene la columna '{col}'.\n"
+                        f"Columnas disponibles: {list(df_work.columns)}")
 
-        # Probabilidad de Interior (NaN para aisladas)
-        df_p = df_work[['_x', '_y', COL_PROB_INT]].rename(
+            # Identificador de imagen (nombre sin el prefijo runN_). Distingue
+            # trayectorias de imagenes distintas que compartan coordenadas y hace
+            # coincidir la misma imagen entre runs.
+            df_work['img'] = _image_id(Path(path).name)
+            df_work['_x']  = df_work[COL_X].round(1)
+            df_work['_y']  = df_work[COL_Y].round(1)
+
+            piezas.append(df_work)
+            n_aisl_run += int(df_work[COL_CLASIFICACION].str.lower()
+                              .eq('aislada').sum())
+
+        # Todas las imagenes de este run apiladas en un unico dataframe
+        df_run = pd.concat(piezas, ignore_index=True)
+
+        # Probabilidad de interior de este run (NaN para aisladas)
+        df_p = df_run[['img', '_x', '_y', COL_PROB_INT]].rename(
             columns={COL_PROB_INT: f'prob_{i+1}'})
         dfs_prob.append(df_p)
 
-        # Guardar etiquetas reales del primer run (todas deberían ser iguales)
-        if COL_CLASE in df_work.columns:
+        # Guardar etiquetas reales del primer run (iguales en todos los runs)
+        if COL_CLASE in df_run.columns:
             if clase_ref is None:
-                clase_ref = df_work[['_x', '_y', COL_CLASE]].copy()
+                clase_ref = df_run[['img', '_x', '_y', COL_CLASE]].copy()
         else:
             tiene_etiquetas = False
 
-        n_aisl = df_work[COL_CLASIFICACION].str.lower().eq('aislada').sum()
-        print(f"  Run {i+1}: {len(df_work)} partículas "
-              f"({n_aisl} aisladas excluidas del voto) — {Path(path).name}")
+        print(f"  {run_name}: {len(df_run)} trayectorias de "
+              f"{len(runs[run_name])} imagen(es) "
+              f"({n_aisl_run} aisladas excluidas del voto)")
 
-    # ── 2. Merge por posición ─────────────────────────────────────────────────
+    # ── 2. Merge por (imagen, posicion) a traves de los runs ─────────────────
     merged = dfs_prob[0]
     for df in dfs_prob[1:]:
-        merged = pd.merge(merged, df, on=['_x', '_y'], how='inner')
+        merged = pd.merge(merged, df, on=['img', '_x', '_y'], how='inner')
 
     n_perdidas = len(dfs_prob[0]) - len(merged)
     if n_perdidas > 0:
-        print(f"\n  [WARNING] {n_perdidas} partículas no coinciden en todos "
+        print(f"\n  [WARNING] {n_perdidas} trayectorias no coinciden en todos "
               f"los runs y han sido excluidas.")
 
-    print(f"\n  Partículas comunes a todos los runs: {len(merged)}")
+    print(f"\n  Taryectorias comunes a todos los runs: {len(merged)}")
 
-    # Añadir etiquetas reales si existen
+    # Anyadir etiquetas reales si existen
     if tiene_etiquetas and clase_ref is not None:
-        merged = pd.merge(merged, clase_ref, on=['_x', '_y'], how='inner')
+        merged = pd.merge(merged, clase_ref, on=['img', '_x', '_y'], how='inner')
 
     # ── 3. Soft voting ────────────────────────────────────────────────────────
     prob_cols = [c for c in merged.columns if c.startswith('prob_')]
@@ -218,8 +360,8 @@ def soft_voting_ensemble(csv_paths: list,
     mask_aisladas = merged['prob_interior_media'].isna()
     mask_clasif   = ~mask_aisladas
 
-    print(f"  Partículas clasificadas (no aisladas): {mask_clasif.sum()}")
-    print(f"  Partículas aisladas:                   {mask_aisladas.sum()}")
+    print(f"  Taryectorias clasificadas (no aisladas): {mask_clasif.sum()}")
+    print(f"  Taryectorias aisladas:                   {mask_aisladas.sum()}")
 
     scores_clasif = merged.loc[mask_clasif, 'prob_interior_media'].values
 
@@ -242,16 +384,17 @@ def soft_voting_ensemble(csv_paths: list,
         umbral = umbral_manual if umbral_manual is not None else 0.5
         print(f"\n  Sin etiquetas reales — umbral usado: {umbral:.4f}")
 
-    # ── 5. Clasificación final ────────────────────────────────────────────────
+    # ── 5. Clasificacion final ────────────────────────────────────────────────
     clasificacion = np.where(
         mask_aisladas, 'Aislada',
         np.where(merged['prob_interior_media'] >= umbral,
                  'Interior', 'Borde'))
 
-    # ── 6. CSV de clasificación ───────────────────────────────────────────────
+    # ── 6. CSV de clasificacion ───────────────────────────────────────────────
     # Columnas en el mismo orden que los CSVs de cada run:
     # X, Y, Clase (si existe), clasificacion, prob_interior
     cols = {
+        'imagen':          merged['img'].values,
         COL_X:             merged['_x'].values,
         COL_Y:             merged['_y'].values,
     }
@@ -264,14 +407,31 @@ def soft_voting_ensemble(csv_paths: list,
 
     csv_clasif = out / 'ensemble_clasificacion.csv'
     resultado.to_csv(csv_clasif, index=False)
-    print(f"\n  CSV de clasificación guardado en: {csv_clasif}")
+    print(f"\n  CSV de clasificación (global) guardado en: {csv_clasif}")
+
+    # ── 6b. Un CSV por imagen (entrada de imagenes_clasificado.py) ────────────
+    if GUARDAR_CSV_POR_IMAGEN:
+        dir_img = out / SUBDIR_POR_IMAGEN if SUBDIR_POR_IMAGEN else out
+        dir_img.mkdir(parents=True, exist_ok=True)
+
+        # Columnas que espera imagenes_clasificado.py (sin 'imagen' por defecto)
+        cols_img = [c for c in resultado.columns
+                    if INCLUIR_COL_IMAGEN or c != 'imagen']
+
+        print(f"\n  CSVs por imagen en: {dir_img}")
+        for img_id, sub in resultado.groupby('imagen', sort=True):
+            nombre = f"{_nombre_seguro(img_id)}{SUFIJO_POR_IMAGEN}.csv"
+            ruta   = dir_img / nombre
+            df_img = sub[cols_img].reset_index(drop=True)
+            df_img.to_csv(ruta, index=False)
+            print(f"    {nombre:50s} ({len(df_img)} trayectorias)")
 
     conteo = pd.Series(clasificacion).value_counts()
     print(f"\n  Distribución final:")
     for etiq, n in conteo.items():
         print(f"    {etiq:12s}: {n:4d}  ({100*n/len(clasificacion):.1f} %)")
 
-    # ── 7. Métricas y figuras (solo si hay etiquetas) ─────────────────────────
+    # ── 7. Metricas y figuras (solo si hay etiquetas) ─────────────────────────
     if not tiene_etiquetas or clase_ref is None:
         print("\n  Sin columna 'Clase' — se omiten métricas y curvas.")
         return resultado
@@ -288,10 +448,10 @@ def soft_voting_ensemble(csv_paths: list,
     f1_th   = np.where((prec_th + rec_th) > 0,
                        2 * prec_th * rec_th / (prec_th + rec_th), 0.0)
 
-    # Métricas al umbral elegido
+    # Metricas al umbral elegido
     m = calcular_metricas_umbral(y_true_eval, scores_eval, umbral)
 
-    # ── 7a. CSV de métricas ───────────────────────────────────────────────────
+    # ── 7a. CSV de metricas ───────────────────────────────────────────────────
     df_met = pd.DataFrame([{
         'umbral':                    round(umbral, 4),
         'AUC_ROC':                   round(auc_roc, 4),
@@ -304,7 +464,7 @@ def soft_voting_ensemble(csv_paths: list,
         'TN':                        m['tn'],
         'FP':                        m['fp'],
         'FN':                        m['fn'],
-        'n_runs':                    len(csv_paths),
+        'n_runs':                    n_runs,
         'n_particulas_evaluadas':    int(mask_conocidas.sum()),
     }])
     csv_met = out / 'ensemble_metricas.csv'
@@ -314,7 +474,7 @@ def soft_voting_ensemble(csv_paths: list,
     # Resumen consola
     sep = '=' * 52
     print(f"\n{sep}")
-    print(f"  MÉTRICAS ENSEMBLE ({len(csv_paths)} runs, soft voting)")
+    print(f"  MÉTRICAS ENSEMBLE ({n_runs} runs, soft voting)")
     print(f"{sep}")
     print(f"  Umbral   : {umbral:.4f}"
           + (" (manual)" if umbral_manual else " (max F1)"))
@@ -340,7 +500,7 @@ def soft_voting_ensemble(csv_paths: list,
                      f'(TPR={tpr_u:.2f}, FPR={fpr_u:.2f})')
     ax.set_xlim([0, 1]); ax.set_ylim([0, 1.02])
     _apply_style(ax, 'False Positive Rate', 'True Positive Rate',
-                 f'ROC Curve — Ensemble ({len(csv_paths)} runs)')
+                 f'ROC Curve — Ensemble ({n_runs} runs)')
     _add_textbox(ax, f'AUC = {auc_roc:.3f}', loc='lower right')
     ax.legend(fontsize=14, loc='upper left')
     fig.tight_layout()
@@ -356,7 +516,7 @@ def soft_voting_ensemble(csv_paths: list,
                      f'(P={m["precision"]:.2f}, R={m["recall"]:.2f})')
     ax.set_xlim([0, 1]); ax.set_ylim([0, 1.02])
     _apply_style(ax, 'Recall', 'Precision',
-                 f'Precision-Recall Curve — Ensemble ({len(csv_paths)} runs)')
+                 f'Precision-Recall Curve — Ensemble ({n_runs} runs)')
     _add_textbox(ax, f'AUC = {auc_pr:.3f}', loc='lower left')
     ax.legend(fontsize=14, loc='upper right')
     fig.tight_layout()
@@ -373,7 +533,7 @@ def soft_voting_ensemble(csv_paths: list,
     ax.axhline(m['precision'], color='blue',  linestyle=':', lw=2)
     ax.set_xlim([0, 1]); ax.set_ylim([0, 1.02])
     _apply_style(ax, 'Threshold', 'Metric Value',
-                 f'Metrics vs Threshold — Ensemble ({len(csv_paths)} runs)')
+                 f'Metrics vs Threshold — Ensemble ({n_runs} runs)')
     ax.legend(fontsize=14)
     fig.tight_layout()
     _save_svg(fig, out / 'ensemble_curva_umbral.svg')
@@ -390,8 +550,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Ensemble soft voting sobre CSVs de múltiples runs.")
     parser.add_argument(
-        "directorio", nargs="?", default="clasificado",
-        help="Directorio con los CSVs de cada run (default: 'clasificado/').")
+        "directorio", nargs="?", default=None,
+        help=f"Directorio con los CSVs de cada run "
+             f"(default: '{DIRECTORIO_ENTRADA}', del cuadro DIRECTORIOS).")
     parser.add_argument(
         "--umbral", type=float, default=None,
         help="Umbral fijo. Si no se indica, se calcula el óptimo por F1.")
@@ -400,15 +561,28 @@ if __name__ == "__main__":
         help="Directorio de salida (default: mismo que el de entrada).")
     args = parser.parse_args()
 
-    directorio = Path(args.directorio)
+    # Los argumentos de consola, si se pasan, sobrescriben el cuadro DIRECTORIOS
+    entrada = args.directorio if args.directorio else DIRECTORIO_ENTRADA
+    salida  = args.salida     if args.salida     else DIRECTORIO_SALIDA
+    umbral  = args.umbral     if args.umbral is not None else UMBRAL_MANUAL
+
+    directorio = Path(entrada)
     if not directorio.exists():
         raise FileNotFoundError(f"No se encuentra el directorio: {directorio}")
 
-    csv_paths = sorted(directorio.glob("*.csv"))
-    if len(csv_paths) == 0:
-        raise FileNotFoundError(f"No se encontraron CSVs en: {directorio}")
+    # Se excluyen los CSVs generados por este mismo script (ejecuciones previas
+    # sobre el mismo directorio), que no son runs.
+    todos     = sorted(directorio.glob("*.csv"))
+    csv_paths = [p for p in todos if not p.name.startswith(PREFIJOS_SALIDA)]
+    n_ignorados = len(todos) - len(csv_paths)
+    if n_ignorados > 0:
+        print(f"[INFO] {n_ignorados} CSV(s) de salida previa ignorados "
+              f"(prefijos: {', '.join(PREFIJOS_SALIDA)})")
 
-    salida = args.salida if args.salida else str(directorio)
+    if len(csv_paths) == 0:
+        raise FileNotFoundError(f"No se encontraron CSVs de run en: {directorio}")
+
+    salida = salida if salida else str(directorio)
 
     print(f"Directorio : {directorio.absolute()}")
     print(f"Salida     : {Path(salida).absolute()}")
@@ -419,5 +593,5 @@ if __name__ == "__main__":
     soft_voting_ensemble(
         csv_paths     = [str(p) for p in csv_paths],
         output_dir    = salida,
-        umbral_manual = args.umbral,
+        umbral_manual = umbral,
     )
